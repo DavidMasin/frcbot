@@ -3,7 +3,7 @@ import asyncio
 import os
 import discord
 from discord.ext import commands
-TOKEN = os.environ["DISCORD_BOT_TOKEN"]
+TOKEN = "MTM2MjM5Mjk3ODc0Mzg5MDAzMA.GIat6G.9YRxg3XuNh0fgp7SThicSgf4XeZISOJ-uiA38w"
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True

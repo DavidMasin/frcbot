@@ -30,8 +30,8 @@ NEXUS_BASE = "https://frc.nexus/api/v1/event"
 sb = statbotics.Statbotics()
 # Only these teams are tracked (hardcoded, based on your list)
 ISR_TEAMS: set[str] = {
-    "1690", "5990", "2630", "2230", "5987", "5951",
-    "3339", "2231", "6738", "5654", "5614", "1942",
+    "1690", "2231", "2630", "4590", "5987", "5951",
+    "3339", "1577", "10935", "2096", "3075",
 }
 
 EVENT_KEYS = [
