@@ -102,22 +102,39 @@ def _is_event_active(event: dict) -> bool:
 
 
 def _webcast_url(event_data: dict) -> str | None:
-    """Extract the first usable stream URL from TBA event webcasts, or None."""
-    for w in event_data.get("webcasts", []):
-        wtype   = w.get("type", "")
-        channel = w.get("channel", "")
-        if not channel:
-            continue
-        if wtype == "twitch":
-            return f"https://twitch.tv/{channel}"
-        if wtype == "youtube":
-            return f"https://youtube.com/watch?v={channel}"
-        if wtype == "livestream":
-            return f"https://livestream.com/{channel}"
-        if wtype == "ustream":
-            return f"https://ustream.tv/channel/{channel}"
-        if wtype == "iframe":
-            return channel  # channel field contains the full URL for iframe streams
+    """
+    Return the stream URL that is most likely live right now.
+    Uses the current event day as an index into TBA's webcasts array,
+    so day-specific streams (YouTube etc.) match what's actually broadcasting.
+    Clamps to the last entry if we're past the end of the schedule.
+    """
+    webcasts = event_data.get("webcasts") or []
+    valid    = [w for w in webcasts if w.get("channel")]
+    if not valid:
+        return None
+
+    # Work out which day of the event we're on (0 = first day)
+    day_index = 0
+    try:
+        start     = dt.date.fromisoformat(event_data["start_date"])
+        day_index = max(0, (dt.date.today() - start).days)
+    except (KeyError, ValueError):
+        pass
+
+    w       = valid[min(day_index, len(valid) - 1)]
+    wtype   = w.get("type", "")
+    channel = w.get("channel", "")
+
+    if wtype == "youtube":
+        return f"https://youtube.com/watch?v={channel}"
+    if wtype == "twitch":
+        return f"https://twitch.tv/{channel}"
+    if wtype == "livestream":
+        return f"https://livestream.com/{channel}"
+    if wtype == "ustream":
+        return f"https://ustream.tv/channel/{channel}"
+    if wtype == "iframe":
+        return channel
     return None
 
 
