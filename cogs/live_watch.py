@@ -253,6 +253,83 @@ class LiveWatch(commands.Cog):
 
         self._active_events = new_cache
 
+        # Check for newly registered events and announce them
+        await self._check_new_event_registrations(all_guild_teams, team_event_map, full_event_data)
+
+    async def _check_new_event_registrations(
+        self,
+        all_guild_teams: dict[int, list[str]],
+        team_event_map: dict[str, list[dict]],
+        full_event_data: dict[str, dict],
+    ) -> None:
+        """
+        For each guild, compare the team's current TBA event list against
+        what we have stored in known_team_events.
+
+        First call (no rows in DB for this guild): seed silently — no announcements.
+        Subsequent calls: announce any events that weren't there last time.
+        """
+        for guild_id, tracked_teams in all_guild_teams.items():
+            cfg = database.get_config(guild_id)
+            channel = (
+                self.bot.get_channel(cfg["announce_channel_id"])
+                if cfg and cfg.get("announce_channel_id") else None
+            )
+
+            # Determine whether this guild has been seeded already
+            is_seeded = database.is_event_tracking_seeded(guild_id)
+
+            for team in tracked_teams:
+                current_keys = {
+                    ev["key"]
+                    for ev in team_event_map.get(team, [])
+                    if ev.get("key")
+                }
+                if not current_keys:
+                    continue
+
+                known_keys = database.get_known_events(guild_id, team)
+                new_keys   = current_keys - known_keys
+
+                if new_keys:
+                    # Always persist new keys regardless of seeding state
+                    database.add_known_events(guild_id, team, new_keys)
+
+                    # Only announce if the guild was already seeded
+                    if is_seeded and channel:
+                        for key in new_keys:
+                            ev_data = full_event_data.get(key)
+                            embed   = await self._new_event_embed(team, key, ev_data)
+                            await channel.send(embed=embed)
+                            log.info(
+                                "Guild %s: announced new event %s for team #%s",
+                                guild_id, key, team
+                            )
+
+    async def _new_event_embed(
+        self, team_number: str, event_key: str, event_data: dict | None
+    ) -> discord.Embed:
+        name     = _display_name(event_data) if event_data else event_key
+        nickname = await self._team_nickname(team_number)
+
+        start = event_data.get("start_date", "?") if event_data else "?"
+        end   = event_data.get("end_date",   "?") if event_data else "?"
+        loc_parts = [
+            event_data.get("city"),
+            event_data.get("state_prov"),
+            event_data.get("country"),
+        ] if event_data else []
+        location = ", ".join(p for p in loc_parts if p) or "Location TBA"
+
+        embed = discord.Embed(
+            title=f"📅 New Event Registered – {nickname} (#{team_number})",
+            description=f"**{name}**\n📍 {location}\n🗓️ {start} → {end}",
+            color=discord.Color.green(),
+            url=f"https://www.thebluealliance.com/event/{event_key}",
+        )
+        embed.set_footer(text=f"Event key: {event_key} • via The Blue Alliance")
+        return embed
+
     @tasks.loop(seconds=EVENT_CACHE_INTERVAL)
     async def _refresh_events(self):
         try:

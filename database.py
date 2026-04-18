@@ -148,6 +148,14 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, team_number)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS known_team_events (
+                guild_id    BIGINT NOT NULL,
+                team_number TEXT   NOT NULL,
+                event_key   TEXT   NOT NULL,
+                PRIMARY KEY (guild_id, team_number, event_key)
+            )
+        """)
     log.info("Database schema ready ✅")
 
 
@@ -313,3 +321,36 @@ def get_users_subscribed_to_team(team_number: str) -> list[int]:
             "SELECT user_id FROM user_teams WHERE team_number = %s", (str(team_number),)
         )
         return [r["user_id"] for r in cur.fetchall()]
+
+# ── Known team events (new event registration detection) ─────────────────────
+
+def get_known_events(guild_id: int, team_number: str) -> set[str]:
+    """Return the set of event keys already known for this team in this guild."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT event_key FROM known_team_events WHERE guild_id = %s AND team_number = %s",
+            (guild_id, str(team_number)),
+        )
+        return {r["event_key"] for r in cur.fetchall()}
+
+
+def add_known_events(guild_id: int, team_number: str, event_keys: set[str]) -> None:
+    """Mark these event keys as known (no-op if already present)."""
+    if not event_keys:
+        return
+    with _cursor() as cur:
+        for key in event_keys:
+            cur.execute("""
+                INSERT INTO known_team_events (guild_id, team_number, event_key)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
+            """, (guild_id, str(team_number), key))
+
+
+def is_event_tracking_seeded(guild_id: int) -> bool:
+    """True if this guild has at least one known-event row (i.e. not first run)."""
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM known_team_events WHERE guild_id = %s LIMIT 1", (guild_id,)
+        )
+        return cur.fetchone() is not None
