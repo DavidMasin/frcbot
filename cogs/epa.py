@@ -58,33 +58,6 @@ class EPA(commands.Cog):
     async def cog_unload(self):
         self.poll_epa_changes.cancel()
 
-    # ── /epa (works everywhere) ───────────────────────────────────────────────
-    @app_commands.command(name="epa", description="Look up EPA (Expected Points Added) for a team")
-    @app_commands.describe(
-        team_number="FRC team number, e.g. 5987",
-        year="Season year (leave blank for career overview)"
-    )
-    async def epa(self, interaction: discord.Interaction, team_number: str, year: int | None = None):
-        await interaction.response.defer(ephemeral=True)
-
-        if not _SB_AVAILABLE:
-            await interaction.followup.send("⚠️ Statbotics library not available.", ephemeral=True)
-            return
-
-        data = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: _get_team_epa(team_number, year)
-        )
-
-        if not data:
-            await interaction.followup.send(
-                f"⚠️ No EPA data found for team **#{team_number}**"
-                + (f" in **{year}**" if year else "") + ".", ephemeral=True
-            )
-            return
-
-        embed = _build_epa_embed(team_number, data, year)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
     # ── /trackepa (guild-only) ────────────────────────────────────────────────
     @_ADMIN_PERMS
     @app_commands.command(name="trackepa", description="Track EPA changes for a team and announce them")
@@ -131,28 +104,6 @@ class EPA(commands.Cog):
             await interaction.response.send_message(
                 f"⚠️ **#{team_number}** wasn't being EPA-tracked.", ephemeral=True
             )
-
-    # ── /epalist (guild-only) ─────────────────────────────────────────────────
-    @app_commands.command(name="epalist", description="Show all EPA-tracked teams for this server")
-    @_GUILD_ONLY
-    async def epalist(self, interaction: discord.Interaction):
-        rows = database.get_epa_tracked_teams(interaction.guild_id)
-        if not rows:
-            await interaction.response.send_message(
-                "No teams are EPA-tracked yet. Use `/trackepa` to add one.", ephemeral=True
-            )
-            return
-
-        lines = "\n".join(
-            f"• `#{r['team_number']}` – last EPA: `{r['last_epa']:.2f}`" if r["last_epa"]
-            else f"• `#{r['team_number']}`"
-            for r in rows
-        )
-        embed = discord.Embed(
-            title="📈 EPA Tracked Teams", description=lines, color=discord.Color.teal()
-        )
-        embed.set_footer(text="visible only to you")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def cog_app_command_error(
         self,
@@ -220,37 +171,6 @@ class EPA(commands.Cog):
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-def _build_epa_embed(team_number: str, data: dict, year: int | None) -> discord.Embed:
-    epa_block    = data.get("epa", {})
-    title_suffix = f" ({year})" if year else ""
-
-    embed = discord.Embed(
-        title=f"📊 Team #{team_number} EPA{title_suffix}",
-        url=f"https://www.statbotics.io/team/{team_number}",
-        color=discord.Color.teal(),
-    )
-
-    mean  = epa_block.get("mean")
-    sd    = epa_block.get("sd")
-    rank  = epa_block.get("ranks", {}).get("total", {}).get("rank")
-    total = epa_block.get("ranks", {}).get("total", {}).get("count")
-
-    if mean  is not None: embed.add_field(name="EPA (mean)",   value=f"`{mean:.2f}`",        inline=True)
-    if sd    is not None: embed.add_field(name="Std Dev",      value=f"`{sd:.2f}`",           inline=True)
-    if rank and total:    embed.add_field(name="Global Rank",  value=f"`#{rank}` / {total}",  inline=True)
-
-    breakdown = epa_block.get("breakdown", {})
-    if breakdown:
-        parts = [
-            f"**{k.replace('_', ' ').title()}:** `{v:.2f}`"
-            for k, v in breakdown.items() if isinstance(v, (int, float))
-        ]
-        if parts:
-            embed.add_field(name="Breakdown", value="\n".join(parts), inline=False)
-
-    embed.set_footer(text="Powered by Statbotics • visible only to you")
-    return embed
 
 
 async def setup(bot: commands.Bot):

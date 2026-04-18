@@ -14,7 +14,7 @@ from discord.ext import commands
 _SERVER_ONLY = {
     "setup", "addteam", "addepa", "removeteam",
     "listteams", "serverinfo", "adminroles",
-    "trackepa", "untrackepa", "epalist",
+    "trackepa", "untrackepa",
 }
 
 
