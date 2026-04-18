@@ -99,42 +99,21 @@ class Config(commands.Cog):
     )
 
     @setup_group.command(name="channel", description="Set the channel for live match announcements")
-    @app_commands.describe(channel="Start typing a channel name")
+    @app_commands.describe(channel="Pick a channel from the list")
     @is_admin()
-    async def setup_channel(self, interaction: discord.Interaction, channel: str):
-        # channel is either a channel ID (from autocomplete) or a raw mention/ID typed manually
-        resolved = None
-        if channel.isdigit():
-            resolved = interaction.guild.get_channel(int(channel))
-        else:
-            # strip <#...> mention format
-            stripped = channel.strip("<#>")
-            if stripped.isdigit():
-                resolved = interaction.guild.get_channel(int(stripped))
-            else:
-                # fall back to name match
-                name = channel.lstrip("#").lower()
-                resolved = discord.utils.get(interaction.guild.text_channels, name=name)
-
-        if not isinstance(resolved, discord.TextChannel):
-            await interaction.response.send_message(
-                f"⚠️ Couldn't find a text channel matching `{channel}`. "
-                "Please pick one from the autocomplete list.", ephemeral=True
-            )
-            return
-
-        database.set_announce_channel(interaction.guild_id, resolved.id)
+    async def setup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        database.set_announce_channel(interaction.guild_id, channel.id)
         await interaction.response.send_message(
-            f"✅ Announcements will now be posted in {resolved.mention}.", ephemeral=True
+            f"✅ Announcements will now be posted in {channel.mention}.", ephemeral=True
         )
 
     @setup_channel.autocomplete("channel")
     async def setup_channel_autocomplete(
         self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        current_lower = current.lower()
+    ) -> list[app_commands.Choice[int]]:
+        current_lower = current.lower().lstrip("#")
         return [
-            app_commands.Choice(name=f"#{ch.name}", value=str(ch.id))
+            app_commands.Choice(name=f"#{ch.name}", value=ch.id)
             for ch in interaction.guild.text_channels
             if current_lower in ch.name.lower()
         ][:25]
