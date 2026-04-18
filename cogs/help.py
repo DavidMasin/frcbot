@@ -15,7 +15,7 @@ from discord.ext import commands
 # ── Command lists ─────────────────────────────────────────────────────────────
 
 # Available everywhere (server + DM)
-_LOOKUP = ("🔍 Lookup", [
+_LOOKUP = ("📋 Info commands", [
     ("/team <number>",              "Full team info, blue banners, links"),
     ("/events <number> [year]",     "Team's event list for a season"),
     ("/event <event_key>",          "Info about an event"),
@@ -26,7 +26,7 @@ _LOOKUP = ("🔍 Lookup", [
     ("/nextmatch",                  "Next upcoming match for teams you follow"),
 ])
 
-_PERSONAL = ("🔔 Personal alerts", [
+_PERSONAL = ("🔔 Personal alerts (DM)", [
     ("/myteam add <number>",        "Subscribe – get a DM when this team plays"),
     ("/myteam remove <number>",     "Unsubscribe from a team"),
     ("/myteam list",                "See your personal subscriptions"),
@@ -34,12 +34,12 @@ _PERSONAL = ("🔔 Personal alerts", [
 ])
 
 # Server-only
-_SERVER_LISTS = ("🔍 Server lists", [
+_SERVER_LISTS = ("📋 Server lists", [
     ("/listteams",                  "All teams tracked for this server"),
     ("/epalist",                    "All EPA-tracked teams for this server"),
 ])
 
-_ADMIN = ("🔑 Admin only", [
+_ADMIN = ("🔑 Admin commands", [
     ("/setup channel <#channel>",   "Set the announcement channel"),
     ("/setup adminrole <@role>",    "Grant a role bot-admin access"),
     ("/addteam <number>",           "Track a single team for live match alerts"),
