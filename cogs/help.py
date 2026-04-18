@@ -1,9 +1,8 @@
 """
-cogs/help.py – /help command, context-aware for DM vs server.
+cogs/help.py – /help command.
 
-In a server: shows all commands (ephemeral).
-In a DM: shows only commands that actually work in DMs, with a note
-         that server-only commands are hidden.
+Builds the command list dynamically from the bot's live app_commands tree
+so it only ever shows commands that are actually registered and working.
 """
 
 from __future__ import annotations
@@ -11,91 +10,76 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+# Commands that should only appear in server context
+_SERVER_ONLY = {
+    "setup", "addteam", "addepa", "removeteam",
+    "listteams", "serverinfo", "adminroles",
+    "trackepa", "untrackepa", "epalist",
+}
 
-# ── Command lists ─────────────────────────────────────────────────────────────
 
-# Available everywhere (server + DM)
-_LOOKUP = ("📋 Info commands", [
-    ("/team <number>",              "Full team info, blue banners, links"),
-    ("/events <number> [year]",     "Team's event list for a season"),
-    ("/event <event_key>",          "Info about an event"),
-    ("/matches <number> <event>",   "Team's match results at an event"),
-    ("/robots <number>",            "Robot names by year"),
-    ("/ranking <number> <event>",   "Team's ranking at an event"),
-    ("/epa <number> [year]",        "Statbotics EPA breakdown"),
-    ("/nextmatch",                  "Next upcoming match for teams you follow"),
-])
+def _format_tree(
+    bot: commands.Bot,
+    in_dm: bool,
+) -> list[tuple[str, str]]:
+    """Return [(name, description)] for every registered command, filtered by context."""
+    rows: list[tuple[str, str]] = []
 
-_PERSONAL = ("🔔 Personal alerts (DM)", [
-    ("/myteam add <number>",        "Subscribe – get a DM when this team plays"),
-    ("/myteam remove <number>",     "Unsubscribe from a team"),
-    ("/myteam list",                "See your personal subscriptions"),
-    ("/myteam clear",               "Remove all your subscriptions"),
-])
+    for cmd in sorted(bot.tree.get_commands(), key=lambda c: c.name):
+        if in_dm and cmd.name in _SERVER_ONLY:
+            continue
 
-# Server-only
-_SERVER_LISTS = ("📋 Server lists", [
-    ("/listteams",                  "All teams tracked for this server"),
-    ("/epalist",                    "All EPA-tracked teams for this server"),
-])
+        if isinstance(cmd, app_commands.Group):
+            for sub in sorted(cmd.commands, key=lambda c: c.name):
+                rows.append((f"/{cmd.name} {sub.name}", sub.description or "—"))
+        else:
+            rows.append((f"/{cmd.name}", cmd.description or "—"))
 
-_ADMIN = ("🔑 Admin commands", [
-    ("/setup channel <#channel>",   "Set the announcement channel"),
-    ("/setup adminrole <@role>",    "Grant a role bot-admin access"),
-    ("/addteam <number>",           "Track a single team for live match alerts"),
-    ("/addepa <count>",             "Add the top N teams by EPA to the watch list"),
-    ("/removeteam <number>",        "Stop tracking a team"),
-    ("/trackepa <number>",          "Track EPA changes for a team"),
-    ("/untrackepa <number>",        "Stop EPA tracking a team"),
-    ("/serverinfo",                 "View bot config for this server"),
-    ("/adminroles",                 "Show which roles have admin bot access"),
-])
-
-SERVER_SECTIONS = [_LOOKUP, _SERVER_LISTS, _PERSONAL, _ADMIN]
-DM_SECTIONS     = [_LOOKUP, _PERSONAL]
+    return rows
 
 
 class Help(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Show available bot commands")
+    @app_commands.command(name="help", description="Show all available bot commands")
     async def help(self, interaction: discord.Interaction):
         in_dm = interaction.guild is None
+        rows  = _format_tree(self.bot, in_dm)
+
+        if not rows:
+            await interaction.response.send_message(
+                "No commands are registered yet. The bot may still be syncing — try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
+        lines = "\n".join(f"`{name}` – {desc}" for name, desc in rows)
 
         if in_dm:
             embed = discord.Embed(
-                title="📖 FRC Bot – DM Commands",
+                title="📖 FRC Bot – Available Commands",
                 description=(
-                    "Here's what works here in DMs.\n"
-                    "Server-only commands (admin setup, `/listteams`, `/epalist`) "
-                    "are hidden — use them inside a server instead."
+                    "Server-only commands (admin setup, team lists) are hidden here.\n\n"
+                    + lines
                 ),
                 color=discord.Color.from_rgb(40, 89, 165),
             )
-            sections  = DM_SECTIONS
-            footer    = "Server-only commands hidden • Data: TBA & Statbotics"
-            ephemeral = False  # DMs are inherently private, no need for ephemeral
+            embed.set_footer(text="Data: TBA & Statbotics")
+            await interaction.response.send_message(embed=embed)
         else:
             embed = discord.Embed(
-                title="📖 FRC Bot – Command Reference",
+                title="📖 FRC Bot – Available Commands",
                 description=(
-                    "**Lookup commands** are private (ephemeral) – only you see them.\n"
-                    "**Personal alerts** (`/myteam`) arrive via **DM** – invisible to others.\n"
-                    "**Live announcements** post to the configured server channel."
+                    "Info commands are **private** – only you see the response.\n"
+                    "Personal alerts (`/myteam`) arrive via **DM**.\n"
+                    "Live match alerts post to the configured server channel.\n\n"
+                    + lines
                 ),
                 color=discord.Color.from_rgb(40, 89, 165),
             )
-            sections  = SERVER_SECTIONS
-            footer    = "Data: The Blue Alliance & Statbotics • FRC Bot"
-            ephemeral = True
-
-        for section_name, cmds in sections:
-            value = "\n".join(f"`{cmd}` – {desc}" for cmd, desc in cmds)
-            embed.add_field(name=section_name, value=value, inline=False)
-
-        embed.set_footer(text=footer)
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+            embed.set_footer(text="Data: The Blue Alliance & Statbotics • FRC Bot")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
