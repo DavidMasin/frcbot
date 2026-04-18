@@ -26,33 +26,66 @@ import psycopg2.errors
 
 log = logging.getLogger("database")
 
-# Railway injects DATABASE_URL for the private network.
-# Fall back to DATABASE_PUBLIC_URL if private isn't set (useful for local tunnelling).
-_RAW_URL: str = (
-    os.environ.get("DATABASE_URL")
-    or os.environ.get("DATABASE_PUBLIC_URL")
-    or ""
-)
 
-if not _RAW_URL:
+def _build_db_kwargs() -> dict:
+    """
+    Build psycopg2 connection kwargs.
+
+    Priority order:
+      1. Individual PG* env vars — Railway always injects these when a
+         Postgres service is linked; most reliable, no parsing needed.
+      2. DATABASE_URL / DATABASE_PUBLIC_URL — parsed via urlparse as fallback.
+
+    Raises RuntimeError if no usable config is found.
+    """
+    # 1 — individual vars (Railway: PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE)
+    host = os.environ.get("PGHOST") or os.environ.get("DB_HOST")
+    if host:
+        log.info("DB config: using PG* environment variables")
+        return dict(
+            host=host,
+            port=int(os.environ.get("PGPORT") or os.environ.get("DB_PORT") or 5432),
+            user=os.environ.get("PGUSER") or os.environ.get("DB_USER") or "postgres",
+            password=os.environ.get("PGPASSWORD") or os.environ.get("DB_PASSWORD") or "",
+            dbname=os.environ.get("PGDATABASE") or os.environ.get("DB_NAME") or "railway",
+            sslmode="require",
+            connect_timeout=10,
+        )
+
+    # 2 — URL fallback
+    raw_url = (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("DATABASE_PRIVATE_URL")
+        or os.environ.get("DATABASE_PUBLIC_URL")
+        or ""
+    )
+    if raw_url:
+        # Normalise scheme so urlparse handles it
+        if raw_url.startswith("postgres://"):
+            raw_url = raw_url.replace("postgres://", "postgresql://", 1)
+        parsed = urlparse(raw_url)
+        if parsed.hostname:
+            log.info("DB config: parsed from URL (host=%s)", parsed.hostname)
+            return dict(
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                user=parsed.username,
+                password=parsed.password,
+                dbname=(parsed.path or "/railway").lstrip("/"),
+                sslmode="require",
+                connect_timeout=10,
+            )
+
     raise RuntimeError(
-        "No database URL found. Set DATABASE_URL (Railway injects this automatically "
-        "when a Postgres service is attached to your project)."
+        "No database config found.\n"
+        "Railway: make sure the Postgres service is linked to this service "
+        "(Settings → Variables should show PGHOST, PGPORT, etc.).\n"
+        "Local: set PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE, "
+        "or DATABASE_URL=postgresql://user:pass@host:5432/dbname"
     )
 
-# Parse URL components individually — avoids psycopg2's DSN parser which
-# rejects Railway's internal hostname (postgres.railway.internal).
-_parsed = urlparse(_RAW_URL)
-_DB_KWARGS = dict(
-    host=_parsed.hostname,
-    port=_parsed.port or 5432,
-    user=_parsed.username,
-    password=_parsed.password,
-    dbname=(_parsed.path or "/railway").lstrip("/"),
-    sslmode="require",        # Railway Postgres requires SSL
-    connect_timeout=10,
-)
 
+_DB_KWARGS = _build_db_kwargs()
 _pool: psycopg2.pool.SimpleConnectionPool | None = None
 
 
@@ -60,7 +93,7 @@ def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
     global _pool
     if _pool is None:
         _pool = psycopg2.pool.SimpleConnectionPool(1, 10, **_DB_KWARGS)
-        log.info("DB pool created → %s:%s/%s", _DB_KWARGS["host"], _DB_KWARGS["port"], _DB_KWARGS["dbname"])
+        log.info("DB pool ready → %s:%s/%s", _DB_KWARGS["host"], _DB_KWARGS["port"], _DB_KWARGS["dbname"])
     return _pool
 
 
