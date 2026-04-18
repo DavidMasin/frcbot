@@ -34,34 +34,53 @@ A generic, multi-server FRC bot with per-server team tracking, live match alerts
 
 ---
 
-## Quick Start
+## Deploying on Railway
 
-### 1. Install dependencies
+### 1. Create a new Railway project
+Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo** and connect your repo.
+
+### 2. Add a PostgreSQL database
+In your project dashboard → **+ New** → **Database** → **PostgreSQL**.
+Railway will automatically inject `DATABASE_URL` into your bot's environment.
+
+### 3. Set environment variables
+In your Railway service → **Variables**, add:
+
+| Variable | Value |
+|---|---|
+| `DISCORD_BOT_TOKEN` | Your bot token from the Discord Developer Portal |
+| `TBA_KEY` | Your Blue Alliance API key |
+| `NEXUS_AUTH` | Your frc.nexus API key |
+
+> `DATABASE_URL` is set automatically by Railway — do not add it manually.
+
+### 4. Deploy
+Push to your connected branch. Railway builds with Nixpacks and runs `python app.py` automatically.
+
+### 5. First-time server setup (admin)
+1. `/setup channel #your-announcements-channel`
+2. `/setup adminrole @YourAdminRole` *(optional)*
+3. `/addteam 5987` or `/addepa 25`
+
+---
+
+## Local development
+
 ```bash
 pip install -r requirements.txt
-```
 
-### 2. Set environment variables
-```bash
 export DISCORD_BOT_TOKEN="your-discord-bot-token"
-export TBA_KEY="your-tba-api-key"          # or put in keys.json
-export NEXUS_AUTH="your-nexus-api-key"     # optional, for Nexus queue data
-```
+export TBA_KEY="your-tba-api-key"
+export NEXUS_AUTH="your-nexus-api-key"
+export DATABASE_URL="postgresql://user:pass@localhost:5432/frcbot"
 
-Or create `keys.json` in the project root:
-```json
-{ "tbaKey": "your-tba-key" }
-```
-
-### 3. Run
-```bash
 python app.py
 ```
 
-### 4. First-time server setup (admin)
-1. `/setup channel #your-announcements-channel`
-2. `/setup adminrole @YourAdminRole` *(optional)*
-3. `/addteam 5987` *(repeat for each team you want to track)*
+Or set `TBA_KEY` via `keys.json` instead of an env var:
+```json
+{ "tbaKey": "your-tba-key" }
+```
 
 ---
 
