@@ -23,6 +23,7 @@ _LOOKUP = ("🔍 Lookup", [
     ("/robots <number>",            "Robot names by year"),
     ("/ranking <number> <event>",   "Team's ranking at an event"),
     ("/epa <number> [year]",        "Statbotics EPA breakdown"),
+    ("/nextmatch",                  "Next upcoming match for teams you follow"),
 ])
 
 _PERSONAL = ("🔔 Personal alerts", [
