@@ -352,8 +352,7 @@ class Config(commands.Cog):
 
         embed = discord.Embed(
             title="🔑 Bot Admin Access",
-            description="
-".join(lines),
+            description="".join(lines),
             color=discord.Color.og_blurple(),
         )
         embed.set_footer(text="visible only to you")
