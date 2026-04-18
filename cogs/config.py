@@ -99,42 +99,13 @@ class Config(commands.Cog):
     )
 
     @setup_group.command(name="channel", description="Set the channel for live match announcements")
-    @app_commands.describe(channel="Start typing to search channels")
+    @app_commands.describe(channel="The channel to post announcements in")
     @is_admin()
-    async def setup_channel(self, interaction: discord.Interaction, channel: str):
-        # Autocomplete submits the channel ID as a string.
-        # Also accept a typed #mention (<#123456>) or bare ID as fallback.
-        channel_id: int | None = None
-
-        clean = channel.strip("<#>")
-        if clean.isdigit():
-            channel_id = int(clean)
-
-        resolved = interaction.guild.get_channel(channel_id) if channel_id else None
-
-        if not isinstance(resolved, discord.TextChannel):
-            await interaction.response.send_message(
-                "⚠️ Please pick a channel from the autocomplete dropdown, "
-                "or paste a channel mention like `#general`.",
-                ephemeral=True,
-            )
-            return
-
-        database.set_announce_channel(interaction.guild_id, resolved.id)
+    async def setup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        database.set_announce_channel(interaction.guild_id, channel.id)
         await interaction.response.send_message(
-            f"✅ Announcements will now be posted in {resolved.mention}.", ephemeral=True
+            f"✅ Announcements will now be posted in {channel.mention}.", ephemeral=True
         )
-
-    @setup_channel.autocomplete("channel")
-    async def setup_channel_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> list[app_commands.Choice[str]]:
-        current_lower = current.lower().lstrip("#")
-        return [
-            app_commands.Choice(name=f"#{ch.name}", value=str(ch.id))
-            for ch in interaction.guild.text_channels
-            if current_lower in ch.name.lower()
-        ][:25]
 
     @setup_group.command(name="adminrole", description="Set a role that can use admin bot commands")
     @app_commands.describe(role="The role to grant bot-admin access")
