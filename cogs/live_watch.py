@@ -334,6 +334,21 @@ class LiveWatch(commands.Cog):
                                 "Guild %s: announced new event %s for team #%s",
                                 guild_id, key, team,
                             )
+                    elif not known_keys:
+                        # New team — pre-seed all existing played matches so the
+                        # next poll doesn't flood the channel with old results.
+                        seeded = 0
+                        for event_key in current_keys:
+                            matches = await _tba.event_matches(self._http, event_key) or []
+                            for m in matches:
+                                if m.get("winning_alliance") or m.get("actual_time"):
+                                    self._seen_results.add((guild_id, m["key"]))
+                                    seeded += 1
+                        if seeded:
+                            log.info(
+                                "Guild %s: seeded %d existing match(es) for new team #%s",
+                                guild_id, seeded, team,
+                            )
 
     async def _new_event_embed(
         self, team_number: str, event_key: str, event_data: dict | None
