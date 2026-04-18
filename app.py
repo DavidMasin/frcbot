@@ -31,7 +31,7 @@ logging.basicConfig(
 log = logging.getLogger("bot")
 
 # ── bot setup ─────────────────────────────────────────────────────────────────
-TOKEN = "MTM2MjM5Mjk3ODc0Mzg5MDAzMA.GIat6G.9YRxg3XuNh0fgp7SThicSgf4XeZISOJ-uiA38w"
+TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 
 intents = discord.Intents.default()
 intents.message_content = True
