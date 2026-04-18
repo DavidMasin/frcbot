@@ -136,16 +136,27 @@ def _match_view(match_key: str, webcast_url: str | None) -> discord.ui.View:
     return view
 
 
-def _win_probability(match_key: str, side: str) -> tuple[float, str]:
+def _win_probability(match_key: str, side: str) -> tuple[float, str] | tuple[None, None]:
+    """
+    Returns (win_prob, predicted_winner) from Statbotics, or (None, None) if
+    the match isn't found or has no prediction yet.  Never returns a fake 50%.
+    """
     if not _SB_OK:
-        return 0.5, "unknown"
+        return None, None
     try:
         m    = _sb.get_match(match_key)
-        pred = m.get("pred", {})
-        rwp  = float(pred.get("red_win_prob", 0.5))
-        return (rwp if side == "red" else 1 - rwp), pred.get("winner", "unknown")
-    except Exception:
-        return 0.5, "unknown"
+        if not m:
+            return None, None
+        pred = m.get("pred") or {}
+        rwp  = pred.get("red_win_prob")
+        winner = pred.get("winner")
+        if rwp is None or winner is None:
+            return None, None
+        prob = float(rwp) if side == "red" else 1 - float(rwp)
+        return prob, str(winner)
+    except Exception as e:
+        log.debug("Statbotics lookup failed for %s: %s", match_key, e)
+        return None, None
 
 
 # ── Main cog ──────────────────────────────────────────────────────────────────
@@ -543,19 +554,33 @@ class LiveWatch(commands.Cog):
 
         time_str = f"Starts in ~**{minutes_until} min**" if minutes_until > 0 else "**Starting now!**"
 
+        # Build description — omit prediction lines if Statbotics has no data yet
+        desc_lines = [
+            f"📋 **Match:** {label}",
+            f"🏅 {names_str}",
+            f"🎨 **Alliance:** {side_str}",
+            "",
+        ]
+        if win_prob is not None and winner_pred:
+            desc_lines += [
+                f"🏆 **Win Probability:** {win_prob:.1%}",
+                f"🔮 **Predicted Winner:** {winner_pred.upper()}",
+                "",
+            ]
+        desc_lines.append(f"🕑 {time_str}")
+
+        footer = (
+            f"{display_name} • Powered by Statbotics & TBA • FRC Bot"
+            if win_prob is not None
+            else f"{display_name} • FRC Bot"
+        )
+
         embed = discord.Embed(
             title=f"{title_prefix} – {display_name}",
-            description=(
-                f"📋 **Match:** {label}\n"
-                f"🏅 {names_str}\n"
-                f"🎨 **Alliance:** {side_str}\n\n"
-                f"🏆 **Win Probability:** {win_prob:.1%}\n"
-                f"🔮 **Predicted Winner:** {winner_pred.upper()}\n\n"
-                f"🕑 {time_str}"
-            ),
+            description="\n".join(desc_lines),
             color=discord.Color.gold() if minutes_until > 0 else discord.Color.red(),
         )
-        embed.set_footer(text=f"{display_name} • Powered by Statbotics & TBA • FRC Bot")
+        embed.set_footer(text=footer)
         return embed
 
     def _result_embed(
