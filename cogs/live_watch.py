@@ -1,0 +1,542 @@
+"""
+cogs/live_watch.py – Generic live match watcher.
+
+Dynamically discovers every active event for every tracked team by querying TBA,
+then polls those events for upcoming matches (via Nexus) and final results (via TBA).
+Works for regional, district, district championship, and championship events alike.
+
+Flow
+----
+Every EVENT_CACHE_INTERVAL seconds:
+  • Fetch each tracked team's current-year events from TBA
+  • Build a unified set of active event keys per guild
+
+Every POLL_INTERVAL seconds:
+  • For each active event, query Nexus for queue status → "on deck / on field" alerts
+  • For each active event, query TBA for completed matches → result embeds
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import logging
+import os
+from typing import Final
+
+import aiohttp
+import discord
+from discord.ext import commands, tasks
+
+import database
+import tba as _tba
+
+log = logging.getLogger("live_watch")
+
+NEXUS_AUTH: Final[str] = os.environ.get("NEXUS_AUTH", "NFkS99_q6pO8lvyC831Ia_lFkf4")
+NEXUS_BASE  = "https://frc.nexus/api/v1/event"
+SEASON      = int(os.environ.get("FRC_SEASON", "2026"))
+
+POLL_INTERVAL        = 30    # seconds – how often to check for new matches / queue status
+EVENT_CACHE_INTERVAL = 300   # seconds – how often to re-fetch each team's event list
+
+# Nexus uses different identifiers only for CMP divisions; all other events match TBA keys.
+_TBA_TO_NEXUS_OVERRIDE: dict[str, str] = {
+    "2026arc": "2026archimedes",
+    "2026cur": "2026curie",
+    "2026dal": "2026daly",
+    "2026gal": "2026galileo",
+    "2026hop": "2026hopper",
+    "2026joh": "2026johnson",
+    "2026mil": "2026milstein",
+    "2026new": "2026newton",
+}
+
+try:
+    import statbotics
+    _sb = statbotics.Statbotics()
+    _SB_OK = True
+except Exception:
+    _SB_OK = False
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _nexus_key(tba_key: str) -> str:
+    """Return the Nexus event identifier for a given TBA event key."""
+    return _TBA_TO_NEXUS_OVERRIDE.get(tba_key, tba_key)
+
+
+def _display_name(event_data: dict) -> str:
+    """Human-readable event name from a TBA event dict."""
+    return event_data.get("short_name") or event_data.get("name") or event_data.get("key", "?")
+
+
+def _nexus_label_to_match_key(tba_event: str, label: str) -> str:
+    """Convert a Nexus label like 'Qualification 12' → TBA key '2026isde1_qm12'."""
+    s = label.lower().replace(" ", "")
+    if s.startswith("qualification"):
+        return f"{tba_event}_qm{s.removeprefix('qualification')}"
+    if s.startswith("final"):
+        num = s.removeprefix("final") or "1"
+        return f"{tba_event}_f1m{num}"
+    if s.startswith("semifinal"):
+        num = s.removeprefix("semifinal") or "1"
+        return f"{tba_event}_sf{num}m1"
+    if s.startswith("playoff"):
+        num = s.removeprefix("playoff") or "1"
+        return f"{tba_event}_sf{num}m1"
+    return f"{tba_event}_{s}"
+
+
+def _is_event_active(event: dict) -> bool:
+    """True if this event is ongoing or upcoming within the current season."""
+    today = dt.date.today()
+    try:
+        end   = dt.date.fromisoformat(event["end_date"])
+        start = dt.date.fromisoformat(event["start_date"])
+    except (KeyError, ValueError):
+        return False
+    # Include events that ended up to 1 day ago (results may still trickle in)
+    return end >= today - dt.timedelta(days=1) and start.year == SEASON
+
+
+def _webcast_url(event_data: dict) -> str | None:
+    """Extract the first usable stream URL from TBA event webcasts, or None."""
+    for w in event_data.get("webcasts", []):
+        wtype   = w.get("type", "")
+        channel = w.get("channel", "")
+        if not channel:
+            continue
+        if wtype == "twitch":
+            return f"https://twitch.tv/{channel}"
+        if wtype == "youtube":
+            return f"https://youtube.com/watch?v={channel}"
+        if wtype == "livestream":
+            return f"https://livestream.com/{channel}"
+        if wtype == "ustream":
+            return f"https://ustream.tv/channel/{channel}"
+        if wtype == "iframe":
+            return channel  # channel field contains the full URL for iframe streams
+    return None
+
+
+def _match_view(match_key: str, webcast_url: str | None) -> discord.ui.View:
+    view = discord.ui.View()
+    if webcast_url:
+        view.add_item(discord.ui.Button(label="📺 Watch Live", url=webcast_url))
+    view.add_item(discord.ui.Button(
+        label="🔵 TBA",
+        url=f"https://www.thebluealliance.com/match/{match_key}",
+    ))
+    view.add_item(discord.ui.Button(
+        label="📊 Statbotics",
+        url=f"https://www.statbotics.io/match/{match_key}",
+    ))
+    return view
+
+
+def _win_probability(match_key: str, side: str) -> tuple[float, str]:
+    if not _SB_OK:
+        return 0.5, "unknown"
+    try:
+        m    = _sb.get_match(match_key)
+        pred = m.get("pred", {})
+        rwp  = float(pred.get("red_win_prob", 0.5))
+        return (rwp if side == "red" else 1 - rwp), pred.get("winner", "unknown")
+    except Exception:
+        return 0.5, "unknown"
+
+
+# ── Main cog ──────────────────────────────────────────────────────────────────
+
+class LiveWatch(commands.Cog):
+    """
+    Watches all events for tracked teams and announces match queue status
+    and results to each guild's configured channel.
+    """
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._http: aiohttp.ClientSession | None = None
+
+        # {guild_id: {tba_event_key: event_dict}}  – refreshed periodically
+        self._active_events: dict[int, dict[str, dict]] = {}
+
+        # Dedup sets
+        self._seen_upcoming: set[tuple] = set()   # (guild_id, nexus_key, label, stage)
+        self._seen_results:  set[tuple] = set()   # (guild_id, match_key)
+
+        # Nickname cache to avoid hammering TBA
+        self._nickname_cache: dict[str, str] = {}
+
+    async def cog_load(self):
+        self._http = aiohttp.ClientSession()
+        asyncio.create_task(self._start())
+
+    async def cog_unload(self):
+        self._refresh_events.cancel()
+        self._poll.cancel()
+        if self._http:
+            await self._http.close()
+
+    # ── Startup ───────────────────────────────────────────────────────────────
+
+    async def _start(self):
+        await self.bot.wait_until_ready()
+        await self._do_refresh_events()
+        await self._seed_played()
+        self._refresh_events.start()
+        self._poll.start()
+        total_events = sum(len(v) for v in self._active_events.values())
+        log.info("LiveWatch ready – watching %d event(s) across %d guild(s)",
+                 total_events, len(self._active_events))
+
+    # ── Event discovery ───────────────────────────────────────────────────────
+
+    async def _do_refresh_events(self):
+        """
+        Query TBA for every tracked team's SEASON events, then update
+        _active_events with the subset that are currently active/upcoming.
+        """
+        all_guild_teams = database.get_all_tracked_teams()
+
+        # De-duplicate API calls: fetch each team's events once, share across guilds
+        all_teams: set[str] = {t for teams in all_guild_teams.values() for t in teams}
+        team_event_map: dict[str, list[dict]] = {}
+        for team in all_teams:
+            evs = await _tba.team_events(self._http, team, str(SEASON))
+            team_event_map[team] = evs or []
+            log.debug("Team %s has %d events in %d", team, len(team_event_map[team]), SEASON)
+
+        # Collect all unique active event keys across every guild
+        all_active_keys: set[str] = set()
+        guild_event_keys: dict[int, set[str]] = {}
+        for guild_id, tracked_teams in all_guild_teams.items():
+            keys: set[str] = set()
+            for team in tracked_teams:
+                for ev in team_event_map.get(team, []):
+                    key = ev.get("key")
+                    if key and _is_event_active(ev):
+                        keys.add(key)
+                        all_active_keys.add(key)
+            guild_event_keys[guild_id] = keys
+
+        # Fetch full event data (includes webcasts) for each unique key.
+        # Re-use cached data for keys we already have so we don't hammer TBA.
+        existing_full: dict[str, dict] = {}
+        for ev_map in self._active_events.values():
+            existing_full.update(ev_map)
+
+        full_event_data: dict[str, dict] = {}
+        for key in all_active_keys:
+            if key in existing_full and existing_full[key].get("webcasts") is not None:
+                full_event_data[key] = existing_full[key]  # already have full data
+            else:
+                data = await _tba.event_full(self._http, key)
+                if data:
+                    full_event_data[key] = data
+                    log.debug("Fetched full event data for %s", key)
+
+        new_cache: dict[int, dict[str, dict]] = {}
+        for guild_id, keys in guild_event_keys.items():
+            events_for_guild = {k: full_event_data[k] for k in keys if k in full_event_data}
+
+            prev = set(self._active_events.get(guild_id, {}))
+            curr = set(events_for_guild)
+            if curr - prev:
+                log.info("Guild %s: added events %s", guild_id, ", ".join(curr - prev))
+            if prev - curr:
+                log.info("Guild %s: removed events %s", guild_id, ", ".join(prev - curr))
+
+            new_cache[guild_id] = events_for_guild
+
+        self._active_events = new_cache
+
+    @tasks.loop(seconds=EVENT_CACHE_INTERVAL)
+    async def _refresh_events(self):
+        try:
+            await self._do_refresh_events()
+        except Exception:
+            log.exception("Error refreshing event cache")
+
+    @_refresh_events.before_loop
+    async def _before_refresh(self):
+        await self.bot.wait_until_ready()
+
+    # ── Seed already-played matches on startup ────────────────────────────────
+
+    async def _seed_played(self):
+        """Mark all already-completed matches as seen so we don't spam old results."""
+        all_guild_teams = database.get_all_tracked_teams()
+        count = 0
+        for guild_id, events in self._active_events.items():
+            tracked = set(all_guild_teams.get(guild_id, []))
+            for event_key in events:
+                matches = await _tba.event_matches(self._http, event_key) or []
+                for m in matches:
+                    if not m.get("winning_alliance"):
+                        continue
+                    mt = {t[3:] for t in (
+                        m["alliances"]["red"]["team_keys"] +
+                        m["alliances"]["blue"]["team_keys"]
+                    )}
+                    if tracked & mt:
+                        self._seen_results.add((guild_id, m["key"]))
+                        count += 1
+        log.info("Seeded %d already-played match(es)", count)
+
+    # ── Main poll loop ─────────────────────────────────────────────────────────
+
+    @tasks.loop(seconds=POLL_INTERVAL)
+    async def _poll(self):
+        try:
+            await self._poll_upcoming()
+            await self._poll_results()
+        except Exception:
+            log.exception("Error in LiveWatch poll")
+
+    @_poll.before_loop
+    async def _before_poll(self):
+        await self.bot.wait_until_ready()
+
+    # ── Upcoming matches via Nexus ─────────────────────────────────────────────
+
+    async def _poll_upcoming(self):
+        now_ms = int(dt.datetime.now().timestamp() * 1000)
+        all_guild_teams = database.get_all_tracked_teams()
+
+        for guild_id, events in self._active_events.items():
+            tracked = set(all_guild_teams.get(guild_id, []))
+            cfg = database.get_config(guild_id)
+            if not cfg or not cfg.get("announce_channel_id"):
+                continue
+            channel = self.bot.get_channel(cfg["announce_channel_id"])
+            if not channel:
+                continue
+
+            for tba_key, event_data in events.items():
+                nexus_k = _nexus_key(tba_key)
+                try:
+                    async with self._http.get(
+                        f"{NEXUS_BASE}/{nexus_k}",
+                        headers={"Nexus-Api-Key": NEXUS_AUTH},
+                        ssl=False,
+                    ) as r:
+                        if r.status != 200:
+                            continue
+                        nexus_data = await r.json()
+                except Exception:
+                    continue
+
+                for m in nexus_data.get("matches", []):
+                    label      = m.get("label", "")
+                    status     = m.get("status", "")
+                    red_teams  = m.get("redTeams", [])
+                    blue_teams = m.get("blueTeams", [])
+                    start_ms   = (m.get("times") or {}).get("estimatedStartTime")
+
+                    if not start_ms or start_ms < now_ms:
+                        continue  # already past
+
+                    teams_in_match = tracked & set(red_teams + blue_teams)
+                    if not teams_in_match:
+                        continue
+
+                    match_key     = _nexus_label_to_match_key(tba_key, label)
+                    display       = _display_name(event_data)
+                    minutes_until = max(0, (start_ms - now_ms)) // 60_000
+
+                    if status == "On deck" and (guild_id, nexus_k, label, "deck") not in self._seen_upcoming:
+                        embed = await self._upcoming_embed(
+                            teams_in_match, red_teams, blue_teams,
+                            label, display, tba_key, match_key, minutes_until, "🛫 On Deck"
+                        )
+                        view = _match_view(match_key, _webcast_url(event_data))
+                        await channel.send(embed=embed, view=view)
+                        await self._dm_personal_subscribers(teams_in_match, embed, view)
+                        self._seen_upcoming.add((guild_id, nexus_k, label, "deck"))
+
+                    if status == "On field" and (guild_id, nexus_k, label, "field") not in self._seen_upcoming:
+                        embed = await self._upcoming_embed(
+                            teams_in_match, red_teams, blue_teams,
+                            label, display, tba_key, match_key, 0, "🔥 MATCH STARTING NOW"
+                        )
+                        view = _match_view(match_key, _webcast_url(event_data))
+                        await channel.send(embed=embed, view=view)
+                        await self._dm_personal_subscribers(teams_in_match, embed, view)
+                        self._seen_upcoming.add((guild_id, nexus_k, label, "field"))
+
+    # ── Results via TBA ───────────────────────────────────────────────────────
+
+    async def _poll_results(self):
+        all_guild_teams = database.get_all_tracked_teams()
+
+        for guild_id, events in self._active_events.items():
+            tracked = set(all_guild_teams.get(guild_id, []))
+            cfg = database.get_config(guild_id)
+            if not cfg or not cfg.get("announce_channel_id"):
+                continue
+            channel = self.bot.get_channel(cfg["announce_channel_id"])
+            if not channel:
+                continue
+
+            for tba_key, event_data in events.items():
+                matches = await _tba.event_matches(self._http, tba_key) or []
+                for m in matches:
+                    if not m.get("winning_alliance"):
+                        continue
+                    key = (guild_id, m["key"])
+                    if key in self._seen_results:
+                        continue
+                    match_teams = {t[3:] for t in (
+                        m["alliances"]["red"]["team_keys"] +
+                        m["alliances"]["blue"]["team_keys"]
+                    )}
+                    teams_in_match = tracked & match_teams
+                    if not teams_in_match:
+                        continue
+                    result_embed = self._result_embed(m, teams_in_match, event_data)
+                    await channel.send(embed=result_embed)
+                    await self._dm_personal_subscribers(teams_in_match, result_embed)
+                    self._seen_results.add(key)
+
+    # ── Embed builders ────────────────────────────────────────────────────────
+
+    async def _team_nickname(self, team_number: str) -> str:
+        if team_number in self._nickname_cache:
+            return self._nickname_cache[team_number]
+        info = await _tba.team_info(self._http, team_number)
+        name = info.get("nickname", f"#{team_number}") if info else f"#{team_number}"
+        self._nickname_cache[team_number] = name
+        return name
+
+    async def _dm_personal_subscribers(
+        self,
+        teams_in_match: set[str],
+        embed: discord.Embed,
+        view: discord.ui.View | None = None,
+    ) -> None:
+        """
+        Find every user who personally subscribes to any team in this match
+        and send them the embed via DM.
+        Silently skips users who have DMs disabled.
+        """
+        notified: set[int] = set()
+        for team in teams_in_match:
+            for user_id in database.get_users_subscribed_to_team(team):
+                if user_id in notified:
+                    continue
+                notified.add(user_id)
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    await user.send(embed=embed, view=view)
+                except discord.Forbidden:
+                    pass   # user has DMs closed
+                except Exception:
+                    pass
+
+    async def _upcoming_embed(
+        self,
+        tracked_in_match: set[str],
+        red_teams: list[str],
+        blue_teams: list[str],
+        label: str,
+        display_name: str,
+        tba_key: str,
+        match_key: str,
+        minutes_until: int,
+        title_prefix: str,
+    ) -> discord.Embed:
+        names     = [await self._team_nickname(t) for t in tracked_in_match]
+        names_str = ", ".join(f"**{n}** (#{t})" for n, t in zip(names, tracked_in_match))
+
+        on_red  = bool(tracked_in_match & set(red_teams))
+        on_blue = bool(tracked_in_match & set(blue_teams))
+        side_str = (
+            "🔴 Red Alliance"  if on_red and not on_blue else
+            "🔵 Blue Alliance" if on_blue and not on_red else
+            "🟪 Both Alliances"
+        )
+        side_key = "red" if (on_red and not on_blue) else "blue"
+
+        win_prob, winner_pred = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _win_probability(match_key, side_key)
+        )
+
+        time_str = f"Starts in ~**{minutes_until} min**" if minutes_until > 0 else "**Starting now!**"
+
+        embed = discord.Embed(
+            title=f"{title_prefix} – {display_name}",
+            description=(
+                f"📋 **Match:** {label}\n"
+                f"🏅 {names_str}\n"
+                f"🎨 **Alliance:** {side_str}\n\n"
+                f"🏆 **Win Probability:** {win_prob:.1%}\n"
+                f"🔮 **Predicted Winner:** {winner_pred.upper()}\n\n"
+                f"🕑 {time_str}"
+            ),
+            color=discord.Color.gold() if minutes_until > 0 else discord.Color.red(),
+        )
+        embed.set_footer(text=f"{display_name} • Powered by Statbotics & TBA • FRC Bot")
+        return embed
+
+    def _result_embed(
+        self,
+        m: dict,
+        tracked_in_match: set[str],
+        event_data: dict,
+    ) -> discord.Embed:
+        red_teams  = [t[3:] for t in m["alliances"]["red"]["team_keys"]]
+        blue_teams = [t[3:] for t in m["alliances"]["blue"]["team_keys"]]
+        red_score  = m["alliances"]["red"]["score"]
+        blue_score = m["alliances"]["blue"]["score"]
+        winner     = m.get("winning_alliance", "")
+
+        on_red  = bool(tracked_in_match & set(red_teams))
+        on_blue = bool(tracked_in_match & set(blue_teams))
+        won  = (winner == "red" and on_red) or (winner == "blue" and on_blue)
+        tied = winner == ""
+
+        outcome = "🎉 WON!" if won else ("🤝 TIE" if tied else "💔 lost")
+        color   = (
+            discord.Color.green()   if won  else
+            discord.Color.greyple() if tied else
+            discord.Color.red()
+        )
+
+        teams_str  = ", ".join(f"#{t}" for t in sorted(tracked_in_match, key=int))
+        rp         = m.get("score_breakdown", {}).get(
+            "red" if on_red else "blue", {}
+        ).get("rp", 0)
+        level      = m.get("comp_level", "?").upper()
+        num        = m.get("match_number", "?")
+        event_name = _display_name(event_data)
+
+        embed = discord.Embed(
+            title=f"🏟️ Match Result – {event_name}",
+            description=(
+                f"**{teams_str}** {outcome}\n\n"
+                f"🔴 **Red Alliance** {'✅' if winner == 'red' else ''}\n"
+                + "\n".join(f"• #{t}" for t in red_teams) + "\n\n"
+                f"🔵 **Blue Alliance** {'✅' if winner == 'blue' else ''}\n"
+                + "\n".join(f"• #{t}" for t in blue_teams) + "\n\n"
+                f"**Score:** 🔴 {red_score}  –  {blue_score} 🔵\n"
+                + (f"**RP Earned:** {rp}" if rp else "")
+            ),
+            color=color,
+        )
+        embed.add_field(
+            name="🔗 Links",
+            value=(
+                f"[View on TBA](https://www.thebluealliance.com/match/{m['key']})  •  "
+                f"[Statbotics](https://www.statbotics.io/match/{m['key']})"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"{event_name} • {level} {num} • FRC Bot")
+        return embed
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(LiveWatch(bot))
