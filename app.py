@@ -78,35 +78,27 @@ async def on_app_command_error(
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
+
+    # Clear any guild-specific commands that were registered previously
+    # (they cause duplicates alongside global commands)
+    for guild in bot.guilds:
+        try:
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+            log.info("Cleared guild-specific commands for %s (%s)", guild.name, guild.id)
+        except Exception as e:
+            log.warning("Failed to clear guild commands for %s: %s", guild.id, e)
+
     await _sync_all()
 
 
 async def _sync_all():
-    """
-    Sync the command tree to every guild the bot is in (instant) and
-    globally (takes up to 1 hour to propagate to new servers).
-    """
-    total = 0
-    errors = 0
-
-    for guild in bot.guilds:
-        try:
-            # Copy the global tree to the guild for instant availability
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            total += len(synced)
-            log.info("Guild %s (%s): synced %d command(s)", guild.name, guild.id, len(synced))
-        except Exception as e:
-            log.warning("Failed to sync to guild %s: %s", guild.id, e)
-            errors += 1
-
-    # Also push globally for any new guilds the bot joins later
+    """Sync the command tree globally."""
     try:
-        await bot.tree.sync()
+        synced = await bot.tree.sync()
+        log.info("Synced %d global command(s)", len(synced))
     except Exception as e:
-        log.warning("Global sync failed: %s", e)
-
-    log.info("Sync complete — %d guild(s) updated, %d error(s)", len(bot.guilds) - errors, errors)
+        log.error("Global sync failed: %s", e)
 
 
 # ── /sync slash command (admin-only) ─────────────────────────────────────────
@@ -120,8 +112,8 @@ async def slash_sync(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     await _sync_all()
     await interaction.followup.send(
-        f"✅ Commands synced to {len(bot.guilds)} guild(s). "
-        "They should be available immediately.",
+        "✅ Global sync complete. New commands may take up to an hour to appear in new servers, "
+        "but should be available here immediately.",
         ephemeral=True,
     )
 
