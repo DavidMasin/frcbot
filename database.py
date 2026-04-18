@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import logging
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 import psycopg2
 import psycopg2.extras
@@ -25,12 +26,32 @@ import psycopg2.errors
 
 log = logging.getLogger("database")
 
-# Railway sets DATABASE_URL automatically; fall back to individual vars for local dev.
-_DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
+# Railway injects DATABASE_URL for the private network.
+# Fall back to DATABASE_PUBLIC_URL if private isn't set (useful for local tunnelling).
+_RAW_URL: str = (
+    os.environ.get("DATABASE_URL")
+    or os.environ.get("DATABASE_PUBLIC_URL")
+    or ""
+)
 
-# Railway sometimes uses the older postgres:// scheme — psycopg2 requires postgresql://
-if _DATABASE_URL.startswith("postgres://"):
-    _DATABASE_URL = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
+if not _RAW_URL:
+    raise RuntimeError(
+        "No database URL found. Set DATABASE_URL (Railway injects this automatically "
+        "when a Postgres service is attached to your project)."
+    )
+
+# Parse URL components individually — avoids psycopg2's DSN parser which
+# rejects Railway's internal hostname (postgres.railway.internal).
+_parsed = urlparse(_RAW_URL)
+_DB_KWARGS = dict(
+    host=_parsed.hostname,
+    port=_parsed.port or 5432,
+    user=_parsed.username,
+    password=_parsed.password,
+    dbname=(_parsed.path or "/railway").lstrip("/"),
+    sslmode="require",        # Railway Postgres requires SSL
+    connect_timeout=10,
+)
 
 _pool: psycopg2.pool.SimpleConnectionPool | None = None
 
@@ -38,7 +59,8 @@ _pool: psycopg2.pool.SimpleConnectionPool | None = None
 def _get_pool() -> psycopg2.pool.SimpleConnectionPool:
     global _pool
     if _pool is None:
-        _pool = psycopg2.pool.SimpleConnectionPool(1, 10, _DATABASE_URL)
+        _pool = psycopg2.pool.SimpleConnectionPool(1, 10, **_DB_KWARGS)
+        log.info("DB pool created → %s:%s/%s", _DB_KWARGS["host"], _DB_KWARGS["port"], _DB_KWARGS["dbname"])
     return _pool
 
 
