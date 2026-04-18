@@ -347,10 +347,4 @@ def add_known_events(guild_id: int, team_number: str, event_keys: set[str]) -> N
             """, (guild_id, str(team_number), key))
 
 
-def is_event_tracking_seeded(guild_id: int) -> bool:
-    """True if this guild has at least one known-event row (i.e. not first run)."""
-    with _cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM known_team_events WHERE guild_id = %s LIMIT 1", (guild_id,)
-        )
-        return cur.fetchone() is not None
+

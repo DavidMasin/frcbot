@@ -291,11 +291,14 @@ class LiveWatch(commands.Cog):
         full_event_data: dict[str, dict],
     ) -> None:
         """
-        For each guild, compare the team's current TBA event list against
-        what we have stored in known_team_events.
+        For each guild, compare each team's current TBA event list against
+        known_team_events in the DB.
 
-        First call (no rows in DB for this guild): seed silently — no announcements.
-        Subsequent calls: announce any events that weren't there last time.
+        Per-team seeding logic:
+          - known_keys is EMPTY for this team → first time we've seen it
+            (either bot first-run or a new /addteam). Seed silently, no announcement.
+          - known_keys has entries → team was already tracked. Any new_keys are
+            genuinely new event registrations → announce them.
         """
         for guild_id, tracked_teams in all_guild_teams.items():
             cfg = database.get_config(guild_id)
@@ -303,9 +306,6 @@ class LiveWatch(commands.Cog):
                 self.bot.get_channel(cfg["announce_channel_id"])
                 if cfg and cfg.get("announce_channel_id") else None
             )
-
-            # Determine whether this guild has been seeded already
-            is_seeded = database.is_event_tracking_seeded(guild_id)
 
             for team in tracked_teams:
                 current_keys = {
@@ -320,18 +320,19 @@ class LiveWatch(commands.Cog):
                 new_keys   = current_keys - known_keys
 
                 if new_keys:
-                    # Always persist new keys regardless of seeding state
                     database.add_known_events(guild_id, team, new_keys)
 
-                    # Only announce if the guild was already seeded
-                    if is_seeded and channel:
+                    # known_keys being non-empty means this team was already
+                    # tracked — so new_keys are genuinely new registrations.
+                    # If known_keys is empty this is first-time init → stay silent.
+                    if known_keys and channel:
                         for key in new_keys:
                             ev_data = full_event_data.get(key)
                             embed   = await self._new_event_embed(team, key, ev_data)
                             await channel.send(embed=embed)
                             log.info(
                                 "Guild %s: announced new event %s for team #%s",
-                                guild_id, key, team
+                                guild_id, key, team,
                             )
 
     async def _new_event_embed(
