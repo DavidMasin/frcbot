@@ -47,7 +47,9 @@ def is_admin():
     discord.py's error handler send the response cleanly without double-response errors.
     """
     async def predicate(interaction: discord.Interaction) -> bool:
-        if interaction.user.guild_permissions.manage_guild:
+        # interaction.permissions is sent directly by Discord in the payload —
+        # no member cache required, works correctly for owners and admins.
+        if interaction.permissions.manage_guild:
             return True
         cfg = database.get_config(interaction.guild_id)
         if cfg and cfg.get("admin_role_id"):
@@ -321,7 +323,8 @@ class Config(commands.Cog):
 
         embed = discord.Embed(
             title="🔑 Bot Admin Access",
-            description="".join(lines),
+            description="
+".join(lines),
             color=discord.Color.og_blurple(),
         )
         embed.set_footer(text="visible only to you")
