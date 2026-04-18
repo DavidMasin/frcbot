@@ -58,7 +58,7 @@ class Events(commands.Cog):
         team : str
             Team number with the leading 'frc' omitted (e.g. '5987').
         year : str | None
-            Specific season (e.g. '2025') or 'all'.  If omitted, defaults to 'all'.
+            Specific season (e.g. '2026') or 'all'.  If omitted, defaults to 'all'.
         """
         # --- Build URLs --------------------------------------------------- #
         if year is None or year.lower() == "all":

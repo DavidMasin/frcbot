@@ -1,6 +1,6 @@
 # cogs/champ_watch.py
 """
-Live watch for Israeli teams at 2025 FIRST Championship.
+Live watch for Israeli teams at 2026 FIRST Championship.
 
 • Announces when an Israeli team is about to play
 • Posts the final score once it’s available
@@ -35,12 +35,12 @@ ISR_TEAMS: set[str] = {
 }
 
 EVENT_KEYS = [
-    "2025arc", "2025cur", "2025dal", "2025gal",
-    "2025hop", "2025joh", "2025mil", "2025new",
+    "2026arc", "2026cur", "2026dal", "2026gal",
+    "2026hop", "2026joh", "2026mil", "2026new",
 ]
 EVENT_KEYS_NEXUS = [
-    "2025archimedes", "2025curie", "2025daly", "2025galileo",
-    "2025hopper", "2025johnson", "2025milstein", "2025newton",
+    "2026archimedes", "2026curie", "2026daly", "2026galileo",
+    "2026hopper", "2026johnson", "2026milstein", "2026newton",
 ]
 
 ANNOUNCE_CHANNEL_ID = 1362810453977334001  # put your channel ID here
@@ -49,14 +49,14 @@ POLL_INTERVAL = 30  # seconds
 BASE_TBA = "https://www.thebluealliance.com/api/v3"
 HEADERS_TBA = {"X-TBA-Auth-Key": TBA_KEY}
 FIELD_NAMES = {
-    "2025arc": "ARCHIMEDES",
-    "2025cur": "CURIE",
-    "2025dal": "DALLY",
-    "2025gal": "GALILEO",
-    "2025hop": "HOPPER",
-    "2025joh": "JOHNSON",
-    "2025mil": "MILSTEIN",
-    "2025new": "NEWTON",
+    "2026arc": "ARCHIMEDES",
+    "2026cur": "CURIE",
+    "2026dal": "DALLY",
+    "2026gal": "GALILEO",
+    "2026hop": "HOPPER",
+    "2026joh": "JOHNSON",
+    "2026mil": "MILSTEIN",
+    "2026new": "NEWTON",
 }
 
 log = logging.getLogger(__name__)
@@ -175,14 +175,14 @@ class ChampWatch(commands.Cog):
 
         # Twitch link per field
         field_streams = {
-            "2025arc": "https://twitch.tv/firstinspires_archimedes",
-            "2025cur": "https://twitch.tv/firstinspires_curie",
-            "2025dal": "https://twitch.tv/firstinspires_daly",
-            "2025gal": "https://twitch.tv/firstinspires_galileo",
-            "2025hop": "https://twitch.tv/firstinspires_hopper",
-            "2025joh": "https://twitch.tv/firstinspires_johnson",
-            "2025mil": "https://twitch.tv/firstinspires_milstein",
-            "2025new": "https://twitch.tv/firstinspires_newton",
+            "2026arc": "https://twitch.tv/firstinspires_archimedes",
+            "2026cur": "https://twitch.tv/firstinspires_curie",
+            "2026dal": "https://twitch.tv/firstinspires_daly",
+            "2026gal": "https://twitch.tv/firstinspires_galileo",
+            "2026hop": "https://twitch.tv/firstinspires_hopper",
+            "2026joh": "https://twitch.tv/firstinspires_johnson",
+            "2026mil": "https://twitch.tv/firstinspires_milstein",
+            "2026new": "https://twitch.tv/firstinspires_newton",
         }
 
         twitch_url = field_streams.get(event_key, "https://twitch.tv/firstinspires")
