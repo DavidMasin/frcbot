@@ -149,30 +149,47 @@ class Notifications(commands.Cog):
 
     @commands.Cog.listener()
     async def on_tba_match_score(self, data: dict) -> None:
-        match = data.get("match") or data
-        match_key = match.get("key", "")
-        if not match_key:
-            return
+        log.info("on_tba_match_score fired — data keys: %s", list(data.keys()))
+        try:
+            match = data.get("match") or data
+            match_key = match.get("key", "")
+            log.info("match_key: %s", match_key)
+            if not match_key:
+                log.warning("no match_key — returning")
+                return
 
-        teams = event_router.extract_teams_from_match(match)
-        if not teams:
-            return
+            teams = event_router.extract_teams_from_match(match)
+            log.info("teams in match: %s", teams)
+            if not teams:
+                log.warning("no teams extracted — returning")
+                return
 
-        guilds = event_router.get_interested_guilds(teams)
-        if not guilds and not event_router.get_interested_users(teams):
-            return
+            guilds = event_router.get_interested_guilds(teams)
+            users  = event_router.get_interested_users(teams)
+            log.info("interested guilds: %s | interested users: %s", guilds, users)
+            if not guilds and not users:
+                log.warning("no interested guilds or users — returning (is 254 tracked?)")
+                return
 
-        event_key = match.get("event_key", match_key.rsplit("_", 1)[0])
-        ev        = await self._event_data(event_key)
-        embed     = await self._build_result_embed(match, teams, ev)
+            event_key = match.get("event_key", match_key.rsplit("_", 1)[0])
+            ev        = await self._event_data(event_key)
+            log.info("event_key: %s | event found: %s", event_key, bool(ev))
 
-        for guild_id, guild_teams in guilds.items():
-            if database.is_match_seen(guild_id, match_key):
-                continue
-            await self._send_to_channel(guild_id, embed)
-            database.mark_match_seen(guild_id, match_key)
+            embed = await self._build_result_embed(match, teams, ev)
+            log.info("embed built successfully")
 
-        await self._dm_users(teams, embed)
+            for guild_id, guild_teams in guilds.items():
+                seen = database.is_match_seen(guild_id, match_key)
+                log.info("guild %s — already seen: %s", guild_id, seen)
+                if seen:
+                    continue
+                await self._send_to_channel(guild_id, embed)
+                database.mark_match_seen(guild_id, match_key)
+                log.info("guild %s — result sent", guild_id)
+
+            await self._dm_users(teams, embed)
+        except Exception as e:
+            log.exception("Error in on_tba_match_score: %s", e)
 
     async def _build_result_embed(
         self, match: dict, tracked: set[str], event_data: dict
