@@ -180,6 +180,7 @@ class Config(commands.Cog):
             )
             return
 
+
         def _epa_val(t: dict) -> float:
             epa = t.get("epa") or {}
             if isinstance(epa, dict):
@@ -187,35 +188,15 @@ class Config(commands.Cog):
             return float(epa or 0)
 
         try:
-            import statbotics
-            sb     = statbotics.Statbotics()
-            season = date.today().year
-
-            # Try API-side sorting first (only fetches what we need).
-            # Fall back to fetching all ~4000 teams and sorting locally if unsupported.
-            try:
-                teams_data = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: sb.get_team_years(
-                        year=season, limit=count, offset=0,
-                        fields=["team", "epa"],
-                        metric="epa_end", ascending=False,
-                    )
-                )
-                # Sanity-check: first 10 results should be descending by EPA
-                sample = [_epa_val(t) for t in teams_data[:10]]
-                if sample != sorted(sample, reverse=True):
-                    raise ValueError("results not sorted by EPA")
-            except Exception:
-                # Fetch all teams and sort locally
-                teams_data = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: sb.get_team_years(
-                        year=season, limit=5000, offset=0, fields=["team", "epa"]
-                    )
-                )
-                teams_data.sort(key=_epa_val, reverse=True)
-                teams_data = teams_data[:count]
+            # Call Statbotics REST API directly — sorted by EPA descending
+            url = (
+                f"https://api.statbotics.io/v3/team_years"
+                f"?year={date.today().year}&limit={count}&offset=0&order_by=-epa_end"
+            )
+            async with self._session.get(url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"Statbotics returned HTTP {resp.status}")
+                teams_data = await resp.json()
         except Exception as e:
             await interaction.followup.send(
                 f"❌ Failed to fetch EPA data from Statbotics: `{e}`", ephemeral=True
@@ -353,7 +334,8 @@ class Config(commands.Cog):
 
         embed = discord.Embed(
             title="🔑 Bot Admin Access",
-            description="".join(lines),
+            description="
+".join(lines),
             color=discord.Color.og_blurple(),
         )
         embed.set_footer(text="visible only to you")
