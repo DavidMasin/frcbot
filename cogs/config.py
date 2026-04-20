@@ -170,7 +170,6 @@ class Config(commands.Cog):
     @is_admin()
     async def addepa(self, interaction: discord.Interaction, count: int):
         await interaction.response.defer(ephemeral=True)
-
         if count < 1:
             await interaction.followup.send("⚠️ Count must be at least 1.", ephemeral=True)
             return
@@ -179,39 +178,38 @@ class Config(commands.Cog):
                 f"⚠️ Maximum is **{MAX_ADDEPA}** teams at once.", ephemeral=True
             )
             return
-
-
-        def _epa_val(t: dict) -> float:
-            epa = t.get("epa") or {}
-            if isinstance(epa, dict):
-                return float(epa.get("mean") or epa.get("norm") or 0)
-            return float(epa or 0)
-
         try:
-            # Call Statbotics REST API directly — sorted by EPA descending
-            url = (
-                f"https://api.statbotics.io/v3/team_years"
-                f"?year={date.today().year}&limit={count}&offset=0&order_by=-epa_end"
+            import statbotics
+            sb     = statbotics.Statbotics()
+            season = date.today().year
+            fetch_limit = max(count * 4, 500)
+            teams_data = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: sb.get_team_years(
+                    year=season,
+                    limit=fetch_limit,
+                    offset=0,
+                    fields=["team", "epa"],
+                )
             )
-            async with self._session.get(url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Statbotics returned HTTP {resp.status}")
-                teams_data = await resp.json()
         except Exception as e:
             await interaction.followup.send(
                 f"❌ Failed to fetch EPA data from Statbotics: `{e}`", ephemeral=True
             )
             return
-
         if not teams_data:
             await interaction.followup.send(
                 "⚠️ Statbotics returned no teams. Try again later.", ephemeral=True
             )
             return
-
+        def _epa_val(t: dict) -> float:
+            epa = t.get("epa") or {}
+            if isinstance(epa, dict):
+                return float(epa.get("mean") or epa.get("norm") or 0)
+            return float(epa or 0)
+        teams_data.sort(key=_epa_val, reverse=True)
         added_teams   = []
         already_teams = []
-
         for entry in teams_data[:count]:
             team_num = str(entry.get("team", "")).replace("frc", "").strip()
             if not team_num:
@@ -220,7 +218,6 @@ class Config(commands.Cog):
                 added_teams.append(team_num)
             else:
                 already_teams.append(team_num)
-
         embed = discord.Embed(
             title=f"📈 Top {count} EPA Teams Added",
             color=discord.Color.teal(),
@@ -241,7 +238,6 @@ class Config(commands.Cog):
                 value=preview + suffix,
                 inline=False,
             )
-
         embed.set_footer(text="Rankings from Statbotics • visible only to you")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -328,7 +324,7 @@ class Config(commands.Cog):
             if role:
                 lines.append(f"{role.mention} — set via `/setup adminrole`")
             else:
-                lines.append(f"<&{cfg['admin_role_id']}> — *(role deleted, use `/setup adminrole` to update)*")
+                lines.append(f"<@&{cfg['admin_role_id']}> — *(role deleted, use `/setup adminrole` to update)*")
         else:
             lines.append("*No extra role configured — use `/setup adminrole` to add one*")
 
