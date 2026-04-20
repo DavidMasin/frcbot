@@ -48,12 +48,35 @@ def _verify_tba_hmac(body: bytes, received_hmac: str) -> bool:
     if not TBA_HMAC_SECRET:
         log.warning("TBA_HMAC_SECRET not set — skipping HMAC verification (unsafe!)")
         return True
-    expected = hmac.new(
-        TBA_HMAC_SECRET.encode(),
+
+    # TBA computes HMAC-MD5 using the secret as the key.
+    # Try string-encoded key first, then raw bytes (in case secret is hex-encoded).
+    expected_str = hmac.new(
+        TBA_HMAC_SECRET.encode("utf-8"),
         body,
         hashlib.md5,
     ).hexdigest()
-    return hmac.compare_digest(expected, received_hmac)
+
+    try:
+        expected_bytes = hmac.new(
+            bytes.fromhex(TBA_HMAC_SECRET),
+            body,
+            hashlib.md5,
+        ).hexdigest()
+    except ValueError:
+        expected_bytes = None
+
+    log.info(
+        "HMAC debug — received: %s | expected(str): %s | expected(bytes): %s",
+        received_hmac, expected_str, expected_bytes,
+    )
+
+    if hmac.compare_digest(expected_str, received_hmac):
+        return True
+    if expected_bytes and hmac.compare_digest(expected_bytes, received_hmac):
+        log.info("HMAC matched using raw-bytes key")
+        return True
+    return False
 
 
 def _verify_nexus_auth(request: web.Request) -> bool:
