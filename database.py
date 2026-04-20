@@ -7,7 +7,6 @@ server_config         : per-guild settings (announce channel, admin role)
 tracked_teams         : teams being watched per guild (admin-managed)
 user_teams            : personal user team subscriptions (DM notifications)
 known_team_events     : seeding table — prevents flooding old events/matches on first add
-nexus_subscriptions   : Nexus webhook registrations (event_key → registered url)
 """
 
 from __future__ import annotations
@@ -132,12 +131,6 @@ def init_db() -> None:
                 guild_id  BIGINT NOT NULL,
                 match_key TEXT   NOT NULL,
                 PRIMARY KEY (guild_id, match_key)
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS nexus_subscriptions (
-                event_key   TEXT PRIMARY KEY,
-                registered  BOOLEAN DEFAULT FALSE
             )
         """)
     log.info("Database schema ready ✅")
@@ -323,27 +316,3 @@ def seed_seen_matches(guild_id: int, match_keys: list[str]) -> None:
                 ON CONFLICT DO NOTHING
             """, (guild_id, key))
 
-
-# ── Nexus webhook subscriptions ───────────────────────────────────────────────
-
-def get_nexus_subscriptions() -> set[str]:
-    """Return all event keys that have a registered Nexus webhook."""
-    with _cursor() as cur:
-        cur.execute("SELECT event_key FROM nexus_subscriptions WHERE registered = TRUE")
-        return {r["event_key"] for r in cur.fetchall()}
-
-
-def add_nexus_subscription(event_key: str) -> None:
-    with _cursor() as cur:
-        cur.execute("""
-            INSERT INTO nexus_subscriptions (event_key, registered)
-            VALUES (%s, TRUE)
-            ON CONFLICT (event_key) DO UPDATE SET registered = TRUE
-        """, (event_key,))
-
-
-def remove_nexus_subscription(event_key: str) -> None:
-    with _cursor() as cur:
-        cur.execute(
-            "DELETE FROM nexus_subscriptions WHERE event_key = %s", (event_key,)
-        )

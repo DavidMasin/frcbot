@@ -11,7 +11,6 @@ Commands
 /listteams                   – list tracked teams
 /serverinfo                  – show config
 /adminroles                  – show admin roles
-/setup nexus-webhook <event> – register a Nexus webhook for an event
 """
 
 from __future__ import annotations
@@ -30,11 +29,8 @@ import tba as _tba
 _GUILD_ONLY  = app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 _ADMIN_PERMS = app_commands.default_permissions(manage_guild=True)
 
-NEXUS_BASE = "https://frc.nexus/api/v1"
 
 import os
-NEXUS_AUTH = os.environ.get("NEXUS_AUTH", "")
-WEBHOOK_BASE_URL = os.environ.get("WEBHOOK_BASE_URL", "")  # e.g. https://yourapp.railway.app
 
 
 def is_admin():
@@ -105,46 +101,6 @@ class Config(commands.Cog):
         await interaction.response.send_message(
             f"✅ {role.mention} now has bot-admin access.", ephemeral=True
         )
-
-    @setup_group.command(name="nexus-webhook", description="Register a Nexus webhook for an event")
-    @app_commands.describe(event_key="TBA event key, e.g. 2026isde1")
-    @is_admin()
-    async def setup_nexus_webhook(self, interaction: discord.Interaction, event_key: str):
-        await interaction.response.defer(ephemeral=True)
-
-        if not WEBHOOK_BASE_URL:
-            await interaction.followup.send(
-                "⚠️ `WEBHOOK_BASE_URL` env var is not set. "
-                "Add it in Railway Variables (e.g. `https://yourapp.railway.app`).",
-                ephemeral=True,
-            )
-            return
-
-        webhook_url = f"{WEBHOOK_BASE_URL.rstrip('/')}/webhook/nexus"
-
-        try:
-            async with self._session.post(
-                f"{NEXUS_BASE}/event/{event_key}/webhook",
-                headers={"Nexus-Api-Key": NEXUS_AUTH},
-                json={"url": webhook_url},
-                ssl=False,
-            ) as r:
-                status = r.status
-                resp_text = await r.text()
-        except Exception as e:
-            await interaction.followup.send(f"❌ Nexus request failed: `{e}`", ephemeral=True)
-            return
-
-        if status in (200, 201):
-            database.add_nexus_subscription(event_key)
-            await interaction.followup.send(
-                f"✅ Nexus webhook registered for `{event_key}`.\n"
-                f"Queue alerts will now arrive instantly.", ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                f"⚠️ Nexus responded with status `{status}`: `{resp_text}`", ephemeral=True
-            )
 
     # ── /addteam ──────────────────────────────────────────────────────────────
     @_ADMIN_PERMS
@@ -252,7 +208,6 @@ class Config(commands.Cog):
     async def serverinfo(self, interaction: discord.Interaction):
         cfg   = database.get_config(interaction.guild_id)
         teams = database.get_tracked_teams(interaction.guild_id)
-        nexus = database.get_nexus_subscriptions()
 
         chan_str = "Not set"
         if cfg and cfg.get("announce_channel_id"):
@@ -268,7 +223,6 @@ class Config(commands.Cog):
         embed.add_field(name="📢 Channel",      value=chan_str, inline=False)
         embed.add_field(name="🔑 Admin Role",   value=role_str, inline=False)
         embed.add_field(name="🏅 Teams",        value=", ".join(f"#{t}" for t in sorted(teams, key=lambda x: int(x) if x.isdigit() else 0)) or "None", inline=False)
-        embed.add_field(name="🔗 Nexus Events", value=", ".join(f"`{k}`" for k in sorted(nexus)) or "None", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /adminroles ───────────────────────────────────────────────────────────
