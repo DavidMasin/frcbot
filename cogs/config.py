@@ -1,19 +1,17 @@
 """
-cogs/config.py – Admin-only slash commands for per-server configuration.
-
-All standalone commands use @app_commands.allowed_contexts(guilds=True, dms=False)
-so Discord never shows them in a user's DM command list.
-The /setup Group uses guild_only=True for the same effect.
+cogs/config.py – Admin slash commands.
 
 Commands
 --------
-/setup channel <#channel>   – set the announcement channel
-/setup adminrole <@role>    – set which role counts as "bot admin"
-/addteam <number>           – track a single team for this server
-/addepa <count>             – add the top <count> teams by Statbotics EPA
-/removeteam <number>        – stop tracking a team
-/listteams                  – show all tracked teams (ephemeral)
-/serverinfo                 – show full bot config (admin)
+/setup channel <channel>     – set announce channel
+/setup adminrole <role>      – set admin role
+/addteam <number>            – track a team
+/addepa <count>              – add top N EPA teams
+/removeteam <number>         – untrack a team
+/listteams                   – list tracked teams
+/serverinfo                  – show config
+/adminroles                  – show admin roles
+/setup nexus-webhook <event> – register a Nexus webhook for an event
 """
 
 from __future__ import annotations
@@ -29,26 +27,18 @@ from discord.ext import commands
 import database
 import tba as _tba
 
-# guild-only context shorthand
-_GUILD_ONLY = app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-
-# Discord-side permission: hides admin commands from non-admins in the UI by default.
-# Server admins can override this per-channel in Discord's integration settings.
+_GUILD_ONLY  = app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 _ADMIN_PERMS = app_commands.default_permissions(manage_guild=True)
 
-MAX_ADDEPA = 100
+NEXUS_BASE = "https://frc.nexus/api/v1"
+
+import os
+NEXUS_AUTH = os.environ.get("NEXUS_AUTH", "")
+WEBHOOK_BASE_URL = os.environ.get("WEBHOOK_BASE_URL", "")  # e.g. https://yourapp.railway.app
 
 
 def is_admin():
-    """
-    Runtime check: user has Manage Guild OR the server's configured custom admin role.
-
-    We raise CheckFailure with a message instead of responding directly — this lets
-    discord.py's error handler send the response cleanly without double-response errors.
-    """
     async def predicate(interaction: discord.Interaction) -> bool:
-        # interaction.permissions is sent directly by Discord in the payload —
-        # no member cache required, works correctly for owners and admins.
         if interaction.permissions.manage_guild:
             return True
         cfg = database.get_config(interaction.guild_id)
@@ -63,8 +53,6 @@ def is_admin():
 
 
 class Config(commands.Cog):
-    """Server configuration commands (guild-only)."""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._session: aiohttp.ClientSession | None = None
@@ -76,49 +64,91 @@ class Config(commands.Cog):
         if self._session:
             await self._session.close()
 
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ):
-        msg = str(error)
-        # Unwrap CheckFailure so the user sees the actual reason
-        if isinstance(error, app_commands.CheckFailure):
-            msg = str(error) or "❌ You don't have permission to use this command."
+    async def cog_app_command_error(self, interaction, error):
+        msg = str(error) if isinstance(error, app_commands.CheckFailure) else "❌ An error occurred."
         if not interaction.response.is_done():
             await interaction.response.send_message(msg, ephemeral=True)
         else:
             await interaction.followup.send(msg, ephemeral=True)
 
-    # ── /setup ────────────────────────────────────────────────────────────────
+    # ── /setup group ──────────────────────────────────────────────────────────
     setup_group = app_commands.Group(
         name="setup",
-        description="Admin: configure the bot for this server",
+        description="Admin: configure the bot",
         guild_only=True,
         default_permissions=discord.Permissions(manage_guild=True),
     )
 
-    @setup_group.command(name="channel", description="Set the channel for live match announcements")
-    @app_commands.describe(channel="The channel to post announcements in")
+    @setup_group.command(name="channel", description="Set the announcement channel")
+    @app_commands.describe(channel="Mention the channel, e.g. #general")
     @is_admin()
-    async def setup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        database.set_announce_channel(interaction.guild_id, channel.id)
+    async def setup_channel(self, interaction: discord.Interaction, channel: str):
+        clean = channel.strip("<#>").strip()
+        if not clean.isdigit():
+            await interaction.response.send_message(
+                "⚠️ Mention the channel with `#`, e.g. `#general`.", ephemeral=True
+            )
+            return
+        resolved = interaction.guild.get_channel(int(clean))
+        if not isinstance(resolved, discord.TextChannel):
+            await interaction.response.send_message("⚠️ That's not a text channel.", ephemeral=True)
+            return
+        database.set_announce_channel(interaction.guild_id, resolved.id)
         await interaction.response.send_message(
-            f"✅ Announcements will now be posted in {channel.mention}.", ephemeral=True
+            f"✅ Announcements → {resolved.mention}", ephemeral=True
         )
 
-    @setup_group.command(name="adminrole", description="Set a role that can use admin bot commands")
-    @app_commands.describe(role="The role to grant bot-admin access")
+    @setup_group.command(name="adminrole", description="Set a role with bot-admin access")
     @is_admin()
     async def setup_adminrole(self, interaction: discord.Interaction, role: discord.Role):
         database.set_admin_role(interaction.guild_id, role.id)
         await interaction.response.send_message(
-            f"✅ Members with {role.mention} can now use admin bot commands.", ephemeral=True
+            f"✅ {role.mention} now has bot-admin access.", ephemeral=True
         )
+
+    @setup_group.command(name="nexus-webhook", description="Register a Nexus webhook for an event")
+    @app_commands.describe(event_key="TBA event key, e.g. 2026isde1")
+    @is_admin()
+    async def setup_nexus_webhook(self, interaction: discord.Interaction, event_key: str):
+        await interaction.response.defer(ephemeral=True)
+
+        if not WEBHOOK_BASE_URL:
+            await interaction.followup.send(
+                "⚠️ `WEBHOOK_BASE_URL` env var is not set. "
+                "Add it in Railway Variables (e.g. `https://yourapp.railway.app`).",
+                ephemeral=True,
+            )
+            return
+
+        webhook_url = f"{WEBHOOK_BASE_URL.rstrip('/')}/webhook/nexus"
+
+        try:
+            async with self._session.post(
+                f"{NEXUS_BASE}/event/{event_key}/webhook",
+                headers={"Nexus-Api-Key": NEXUS_AUTH},
+                json={"url": webhook_url},
+                ssl=False,
+            ) as r:
+                status = r.status
+                resp_text = await r.text()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Nexus request failed: `{e}`", ephemeral=True)
+            return
+
+        if status in (200, 201):
+            database.add_nexus_subscription(event_key)
+            await interaction.followup.send(
+                f"✅ Nexus webhook registered for `{event_key}`.\n"
+                f"Queue alerts will now arrive instantly.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ Nexus responded with status `{status}`: `{resp_text}`", ephemeral=True
+            )
 
     # ── /addteam ──────────────────────────────────────────────────────────────
     @_ADMIN_PERMS
-    @app_commands.command(name="addteam", description="Track a team – bot will announce their matches")
+    @app_commands.command(name="addteam", description="Track a team – get match notifications")
     @_GUILD_ONLY
     @app_commands.describe(team_number="FRC team number, e.g. 5987")
     @is_admin()
@@ -126,10 +156,8 @@ class Config(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         info = await _tba.team_info(self._session, team_number)
-        if info is None:
-            await interaction.followup.send(
-                f"⚠️ Team `#{team_number}` not found on TBA.", ephemeral=True
-            )
+        if not info:
+            await interaction.followup.send(f"⚠️ Team `#{team_number}` not found on TBA.", ephemeral=True)
             return
 
         added    = database.add_tracked_team(interaction.guild_id, team_number)
@@ -141,192 +169,122 @@ class Config(commands.Cog):
             )
         else:
             await interaction.followup.send(
-                f"ℹ️ **{nickname}** (#{team_number}) is already being tracked.", ephemeral=True
+                f"ℹ️ **{nickname}** (#{team_number}) is already tracked.", ephemeral=True
             )
 
     # ── /addepa ───────────────────────────────────────────────────────────────
     @_ADMIN_PERMS
-    @app_commands.command(name="addepa", description="Add the top N teams by Statbotics EPA to the watch list")
+    @app_commands.command(name="addepa", description="Add the top N teams by Statbotics EPA")
     @_GUILD_ONLY
     @app_commands.describe(count="How many top-EPA teams to add, e.g. 25")
     @is_admin()
     async def addepa(self, interaction: discord.Interaction, count: int):
         await interaction.response.defer(ephemeral=True)
 
-        if count < 1:
-            await interaction.followup.send("⚠️ Count must be at least 1.", ephemeral=True)
-            return
-        if count > MAX_ADDEPA:
-            await interaction.followup.send(
-                f"⚠️ Maximum is **{MAX_ADDEPA}** teams at once.", ephemeral=True
-            )
+        if not 1 <= count <= 100:
+            await interaction.followup.send("⚠️ Count must be between 1 and 100.", ephemeral=True)
             return
 
         try:
             import statbotics
-            sb     = statbotics.Statbotics()
+            sb = statbotics.Statbotics()
             season = date.today().year
-
-            # Statbotics doesn't support order_by — fetch a large pool and sort manually
-            fetch_limit = max(count * 4, 500)
             teams_data = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: sb.get_team_years(
-                    year=season,
-                    limit=fetch_limit,
-                    offset=0,
-                    fields=["team", "epa"],
-                )
+                lambda: sb.get_team_years(year=season, limit=max(count * 4, 500), offset=0, fields=["team", "epa"])
             )
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ Failed to fetch EPA data from Statbotics: `{e}`", ephemeral=True
-            )
+            await interaction.followup.send(f"❌ Statbotics error: `{e}`", ephemeral=True)
             return
 
-        if not teams_data:
-            await interaction.followup.send(
-                "⚠️ Statbotics returned no teams. Try again later.", ephemeral=True
-            )
-            return
-
-        def _epa_val(t: dict) -> float:
+        def _epa_val(t):
             epa = t.get("epa") or {}
-            if isinstance(epa, dict):
-                return float(epa.get("mean") or epa.get("norm") or 0)
-            return float(epa or 0)
+            return float(epa.get("mean") or 0) if isinstance(epa, dict) else float(epa or 0)
 
         teams_data.sort(key=_epa_val, reverse=True)
 
-        added_teams   = []
-        already_teams = []
-
+        added, already = [], []
         for entry in teams_data[:count]:
-            team_num = str(entry.get("team", "")).replace("frc", "").strip()
-            if not team_num:
+            num = str(entry.get("team", "")).replace("frc", "").strip()
+            if not num:
                 continue
-            if database.add_tracked_team(interaction.guild_id, team_num):
-                added_teams.append(team_num)
-            else:
-                already_teams.append(team_num)
+            (added if database.add_tracked_team(interaction.guild_id, num) else already).append(num)
 
-        embed = discord.Embed(
-            title=f"📈 Top {count} EPA Teams Added",
-            color=discord.Color.teal(),
-        )
-        if added_teams:
-            preview = ", ".join(f"#{t}" for t in added_teams[:20])
-            suffix  = f" and {len(added_teams) - 20} more…" if len(added_teams) > 20 else ""
-            embed.add_field(
-                name=f"✅ Added ({len(added_teams)})",
-                value=preview + suffix,
-                inline=False,
-            )
-        if already_teams:
-            preview = ", ".join(f"#{t}" for t in already_teams[:20])
-            suffix  = f" and {len(already_teams) - 20} more…" if len(already_teams) > 20 else ""
-            embed.add_field(
-                name=f"ℹ️ Already tracked ({len(already_teams)})",
-                value=preview + suffix,
-                inline=False,
-            )
-
-        embed.set_footer(text="Rankings from Statbotics • visible only to you")
+        embed = discord.Embed(title=f"📈 Top {count} EPA Teams", color=discord.Color.teal())
+        if added:
+            preview = ", ".join(f"#{t}" for t in added[:20])
+            embed.add_field(name=f"✅ Added ({len(added)})", value=preview + (" …" if len(added) > 20 else ""), inline=False)
+        if already:
+            preview = ", ".join(f"#{t}" for t in already[:20])
+            embed.add_field(name=f"ℹ️ Already tracked ({len(already)})", value=preview + (" …" if len(already) > 20 else ""), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /removeteam ───────────────────────────────────────────────────────────
     @_ADMIN_PERMS
     @app_commands.command(name="removeteam", description="Stop tracking a team")
     @_GUILD_ONLY
-    @app_commands.describe(team_number="FRC team number, e.g. 5987")
+    @app_commands.describe(team_number="FRC team number")
     @is_admin()
     async def removeteam(self, interaction: discord.Interaction, team_number: str):
         removed = database.remove_tracked_team(interaction.guild_id, team_number)
-        if removed:
-            await interaction.response.send_message(
-                f"🗑️ Stopped tracking team **#{team_number}**.", ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"⚠️ Team **#{team_number}** wasn't being tracked.", ephemeral=True
-            )
+        msg = f"🗑️ Stopped tracking **#{team_number}**." if removed else f"⚠️ **#{team_number}** wasn't tracked."
+        await interaction.response.send_message(msg, ephemeral=True)
 
     # ── /listteams ────────────────────────────────────────────────────────────
-    @app_commands.command(name="listteams", description="List all tracked teams for this server")
+    @_ADMIN_PERMS
+    @app_commands.command(name="listteams", description="List all tracked teams")
     @_GUILD_ONLY
     async def listteams(self, interaction: discord.Interaction):
         teams = database.get_tracked_teams(interaction.guild_id)
         if not teams:
-            await interaction.response.send_message(
-                "No teams are being tracked yet. Use `/addteam` or `/addepa` to add some.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("No teams tracked yet. Use `/addteam`.", ephemeral=True)
             return
-
-        lines = "\n".join(f"• `#{t}`" for t in sorted(teams, key=lambda x: int(x)))
-        embed = discord.Embed(
-            title="📋 Tracked Teams",
-            description=lines,
-            color=discord.Color.blurple(),
-        )
-        embed.set_footer(text=f"{len(teams)} team(s) tracked • visible only to you")
+        lines = "\n".join(f"• `#{t}`" for t in sorted(teams, key=lambda x: int(x) if x.isdigit() else 0))
+        embed = discord.Embed(title="📋 Tracked Teams", description=lines, color=discord.Color.blurple())
+        embed.set_footer(text=f"{len(teams)} team(s)")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /serverinfo ───────────────────────────────────────────────────────────
     @_ADMIN_PERMS
-    @app_commands.command(name="serverinfo", description="Show this server's bot configuration")
+    @app_commands.command(name="serverinfo", description="Show bot configuration")
     @_GUILD_ONLY
     @is_admin()
     async def serverinfo(self, interaction: discord.Interaction):
         cfg   = database.get_config(interaction.guild_id)
         teams = database.get_tracked_teams(interaction.guild_id)
+        nexus = database.get_nexus_subscriptions()
 
         chan_str = "Not set"
         if cfg and cfg.get("announce_channel_id"):
-            chan = interaction.guild.get_channel(cfg["announce_channel_id"])
-            chan_str = chan.mention if chan else f"<#{cfg['announce_channel_id']}> (deleted?)"
+            ch = interaction.guild.get_channel(cfg["announce_channel_id"])
+            chan_str = ch.mention if ch else f"<#{cfg['announce_channel_id']}>"
 
-        role_str = "Not set (Manage Server only)"
+        role_str = "Not set"
         if cfg and cfg.get("admin_role_id"):
             role = interaction.guild.get_role(cfg["admin_role_id"])
-            role_str = role.mention if role else f"<@&{cfg['admin_role_id']}> (deleted?)"
+            role_str = role.mention if role else f"<@&{cfg['admin_role_id']}>"
 
         embed = discord.Embed(title="⚙️ Bot Configuration", color=discord.Color.og_blurple())
-        embed.add_field(name="📢 Announce Channel", value=chan_str, inline=False)
-        embed.add_field(name="🔑 Admin Role",       value=role_str, inline=False)
-        embed.add_field(
-            name="🏅 Tracked Teams",
-            value=", ".join(f"#{t}" for t in sorted(teams, key=lambda x: int(x))) or "None",
-            inline=False,
-        )
+        embed.add_field(name="📢 Channel",      value=chan_str, inline=False)
+        embed.add_field(name="🔑 Admin Role",   value=role_str, inline=False)
+        embed.add_field(name="🏅 Teams",        value=", ".join(f"#{t}" for t in sorted(teams, key=lambda x: int(x) if x.isdigit() else 0)) or "None", inline=False)
+        embed.add_field(name="🔗 Nexus Events", value=", ".join(f"`{k}`" for k in sorted(nexus)) or "None", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
     # ── /adminroles ───────────────────────────────────────────────────────────
     @_ADMIN_PERMS
-    @app_commands.command(name="adminroles", description="Show which roles can use admin bot commands")
+    @app_commands.command(name="adminroles", description="Show which roles have admin bot access")
     @_GUILD_ONLY
     @is_admin()
     async def adminroles(self, interaction: discord.Interaction):
-        cfg = database.get_config(interaction.guild_id)
-
+        cfg   = database.get_config(interaction.guild_id)
         lines = ["**Manage Server** permission — always grants access"]
-
         if cfg and cfg.get("admin_role_id"):
             role = interaction.guild.get_role(cfg["admin_role_id"])
-            if role:
-                lines.append(f"{role.mention} — set via `/setup adminrole`")
-            else:
-                lines.append(f"<@&{cfg['admin_role_id']}> — *(role deleted, use `/setup adminrole` to update)*")
+            lines.append(role.mention if role else f"<@&{cfg['admin_role_id']}> *(deleted?)*")
         else:
-            lines.append("*No extra role configured — use `/setup adminrole` to add one*")
-
-        embed = discord.Embed(
-            title="🔑 Bot Admin Access",
-            description="".join(lines),
-            color=discord.Color.og_blurple(),
-        )
-        embed.set_footer(text="visible only to you")
+            lines.append("*No extra role set — use `/setup adminrole`*")
+        embed = discord.Embed(title="🔑 Bot Admin Access", description="\n".join(lines), color=discord.Color.og_blurple())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

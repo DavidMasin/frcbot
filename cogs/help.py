@@ -1,84 +1,55 @@
-"""
-cogs/help.py – /help command.
-
-Builds the command list dynamically from the bot's live app_commands tree
-so it only ever shows commands that are actually registered and working.
-"""
+"""cogs/help.py – dynamic /help, reads from the live command tree."""
 
 from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# Commands that should only appear in server context
 _SERVER_ONLY = {
     "setup", "addteam", "addepa", "removeteam",
     "listteams", "serverinfo", "adminroles",
-    "trackepa", "untrackepa",
 }
-
-
-def _format_tree(
-    bot: commands.Bot,
-    in_dm: bool,
-) -> list[tuple[str, str]]:
-    """Return [(name, description)] for every registered command, filtered by context."""
-    rows: list[tuple[str, str]] = []
-
-    for cmd in sorted(bot.tree.get_commands(), key=lambda c: c.name):
-        if in_dm and cmd.name in _SERVER_ONLY:
-            continue
-
-        if isinstance(cmd, app_commands.Group):
-            for sub in sorted(cmd.commands, key=lambda c: c.name):
-                rows.append((f"/{cmd.name} {sub.name}", sub.description or "—"))
-        else:
-            rows.append((f"/{cmd.name}", cmd.description or "—"))
-
-    return rows
 
 
 class Help(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Show all available bot commands")
+    @app_commands.command(name="help", description="Show available bot commands")
     async def help(self, interaction: discord.Interaction):
         in_dm = interaction.guild is None
-        rows  = _format_tree(self.bot, in_dm)
+        rows: list[tuple[str, str]] = []
 
-        if not rows:
-            await interaction.response.send_message(
-                "No commands are registered yet. The bot may still be syncing — try again in a moment.",
-                ephemeral=True,
-            )
-            return
+        for cmd in sorted(self.bot.tree.get_commands(), key=lambda c: c.name):
+            if in_dm and cmd.name in _SERVER_ONLY:
+                continue
+            if isinstance(cmd, app_commands.Group):
+                for sub in sorted(cmd.commands, key=lambda c: c.name):
+                    rows.append((f"/{cmd.name} {sub.name}", sub.description or "—"))
+            else:
+                rows.append((f"/{cmd.name}", cmd.description or "—"))
 
         lines = "\n".join(f"`{name}` – {desc}" for name, desc in rows)
 
         if in_dm:
             embed = discord.Embed(
-                title="📖 FRC Bot – Available Commands",
-                description=(
-                    "Server-only commands (admin setup, team lists) are hidden here.\n\n"
-                    + lines
-                ),
+                title="📖 FRC Webhook Bot – DM Commands",
+                description="Server-only commands are hidden.\n\n" + lines,
                 color=discord.Color.from_rgb(40, 89, 165),
             )
-            embed.set_footer(text="Data: TBA & Statbotics")
+            embed.set_footer(text="Powered by TBA & Nexus webhooks")
             await interaction.response.send_message(embed=embed)
         else:
             embed = discord.Embed(
-                title="📖 FRC Bot – Available Commands",
+                title="📖 FRC Webhook Bot – Commands",
                 description=(
-                    "Info commands are **private** – only you see the response.\n"
-                    "Personal alerts (`/myteam`) arrive via **DM**.\n"
-                    "Live match alerts post to the configured server channel.\n\n"
-                    + lines
+                    "Responses are **private** (ephemeral).\n"
+                    "Match alerts post to the configured channel.\n"
+                    "Personal alerts (`/myteam`) arrive via **DM**.\n\n" + lines
                 ),
                 color=discord.Color.from_rgb(40, 89, 165),
             )
-            embed.set_footer(text="Data: The Blue Alliance & Statbotics • FRC Bot")
+            embed.set_footer(text="Powered by TBA & Nexus webhooks")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

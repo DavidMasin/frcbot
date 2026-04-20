@@ -1,12 +1,19 @@
 """
-app.py – FRC Discord Bot entry point.
+app.py – FRC Webhook Bot entry point.
 
-Setup
------
-Set these environment variables before running:
-    DISCORD_BOT_TOKEN   – your bot's token
-    TBA_KEY             – The Blue Alliance API key
-    NEXUS_AUTH          – frc.nexus API key
+Runs two async services in the same event loop:
+  1. An aiohttp HTTP server that receives TBA and Nexus webhook POSTs
+  2. A discord.py bot that sends the resulting notifications
+
+Environment variables
+---------------------
+DISCORD_BOT_TOKEN   – required
+TBA_KEY             – required (Blue Alliance API key)
+TBA_HMAC_SECRET     – required (set when registering webhook at thebluealliance.com/account)
+NEXUS_AUTH          – required (frc.nexus API key)
+DATABASE_URL / PG*  – required (Railway injects automatically)
+PORT                – optional, defaults to 8000 (Railway injects automatically)
+FRC_SEASON          – optional, defaults to 2026
 """
 
 from __future__ import annotations
@@ -19,8 +26,10 @@ import traceback
 import discord
 from discord import app_commands
 from discord.ext import commands
+from aiohttp import web
 
 import database
+from webhook_server import build_webhook_app
 
 # ── logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -34,66 +43,50 @@ log = logging.getLogger("bot")
 TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-# ── global app-command error handler ─────────────────────────────────────────
-
+# ── global slash-command error handler ────────────────────────────────────────
 @bot.tree.error
 async def on_app_command_error(
     interaction: discord.Interaction,
     error: app_commands.AppCommandError,
 ):
-    """Catch any unhandled slash-command error and report it to the user."""
-    # Unwrap the real cause if it's wrapped in CommandInvokeError
     cause = getattr(error, "original", error)
-
     if isinstance(cause, app_commands.CheckFailure):
         msg = str(cause) or "❌ You don't have permission to use this command."
     elif isinstance(cause, app_commands.CommandOnCooldown):
         msg = f"⏳ Slow down! Try again in {cause.retry_after:.1f}s."
     else:
-        # Log the full traceback so we can debug from Railway logs
         log.error(
-            "Unhandled error in /%s: %s",
+            "Unhandled error in /%s:\n%s",
             interaction.command.name if interaction.command else "unknown",
             "".join(traceback.format_exception(type(cause), cause, cause.__traceback__)),
         )
         msg = f"❌ Something went wrong: `{cause}`"
-
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
-        pass   # interaction already expired — nothing we can do
+        pass
 
 
-# ── on_ready: sync commands to every guild immediately ────────────────────────
-
+# ── on_ready: sync commands ────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (id=%s)", bot.user, bot.user.id)
 
-    # Clear any guild-specific commands that were registered previously
-    # (they cause duplicates alongside global commands)
+    # Clear old guild-specific duplicates if any
     for guild in bot.guilds:
         try:
             bot.tree.clear_commands(guild=guild)
             await bot.tree.sync(guild=guild)
-            log.info("Cleared guild-specific commands for %s (%s)", guild.name, guild.id)
-        except Exception as e:
-            log.warning("Failed to clear guild commands for %s: %s", guild.id, e)
+        except Exception:
+            pass
 
-    await _sync_all()
-
-
-async def _sync_all():
-    """Sync the command tree globally."""
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d global command(s)", len(synced))
@@ -101,44 +94,45 @@ async def _sync_all():
         log.error("Global sync failed: %s", e)
 
 
-# ── /sync slash command (admin-only) ─────────────────────────────────────────
-
+# ── /sync owner command ───────────────────────────────────────────────────────
 @bot.tree.command(name="sync", description="Force re-sync slash commands (bot owner only)")
 async def slash_sync(interaction: discord.Interaction):
     if interaction.user.id != (await bot.application_info()).owner.id:
         await interaction.response.send_message("❌ Owner only.", ephemeral=True)
         return
-
     await interaction.response.defer(ephemeral=True)
-    await _sync_all()
-    await interaction.followup.send(
-        "✅ Global sync complete. New commands may take up to an hour to appear in new servers, "
-        "but should be available here immediately.",
-        ephemeral=True,
-    )
+    synced = await bot.tree.sync()
+    await interaction.followup.send(f"✅ Synced {len(synced)} command(s).", ephemeral=True)
 
 
-# ── extension loading ─────────────────────────────────────────────────────────
-
+# ── main ──────────────────────────────────────────────────────────────────────
 async def main() -> None:
     database.init_db()
     log.info("Database initialised ✅")
 
+    # Build the webhook HTTP app — pass the bot so handlers can send Discord messages
+    webhook_app = build_webhook_app(bot)
+
+    # Load all cogs
     async with bot:
-        failed = []
-        for fname in sorted(os.listdir("./cogs")):   # sorted = deterministic order
+        for fname in sorted(os.listdir("./cogs")):
             if fname.endswith(".py"):
                 ext = f"cogs.{fname[:-3]}"
                 try:
                     await bot.load_extension(ext)
-                    log.info("Loaded extension: %s", ext)
+                    log.info("Loaded: %s", ext)
                 except Exception as e:
                     log.error("Failed to load %s: %s", ext, e)
-                    failed.append(ext)   # log and continue — don't crash the bot
 
-        if failed:
-            log.warning("The following extensions failed to load: %s", ", ".join(failed))
+        # Start aiohttp server in the background
+        port = int(os.environ.get("PORT", 8000))
+        runner = web.AppRunner(webhook_app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        log.info("Webhook server listening on port %d ✅", port)
 
+        # Start Discord bot (runs until cancelled)
         await bot.start(TOKEN)
 
 

@@ -1,24 +1,22 @@
-"""
-cogs/online.py – fires on_ready and logs the bot as online.
-"""
+"""cogs/online.py – on_ready status."""
 import discord
 from discord.ext import commands
 
 
 class Online(commands.Cog):
-    def __init__(self, client: commands.Bot):
-        self.client = client
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
 
     @commands.Cog.listener()
     async def on_ready(self):
-        await self.client.change_presence(
+        await self.bot.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="FRC matches • /help | Send a DM for private notifications"
+                name="FRC webhooks • /help"
             )
         )
-        print(f"✅ {self.client.user} is online!")
+        print(f"✅ {self.bot.user} online")
 
 
-async def setup(client: commands.Bot):
-    await client.add_cog(Online(client))
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Online(bot))
