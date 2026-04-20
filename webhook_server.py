@@ -44,39 +44,17 @@ NEXUS_AUTH: str      = os.environ.get("NEXUS_AUTH", "")
 # ── HMAC verification ─────────────────────────────────────────────────────────
 
 def _verify_tba_hmac(body: bytes, received_hmac: str) -> bool:
-    """Verify TBA's X-TBA-HMAC header against our secret."""
+    """Verify TBA's X-TBA-HMAC header. TBA uses HMAC-SHA256."""
     if not TBA_HMAC_SECRET:
         log.warning("TBA_HMAC_SECRET not set — skipping HMAC verification (unsafe!)")
         return True
-
-    # TBA computes HMAC-MD5 using the secret as the key.
-    # Try string-encoded key first, then raw bytes (in case secret is hex-encoded).
-    expected_str = hmac.new(
+    expected = hmac.new(
         TBA_HMAC_SECRET.encode("utf-8"),
         body,
-        hashlib.md5,
+        hashlib.sha256,
     ).hexdigest()
-
-    try:
-        expected_bytes = hmac.new(
-            bytes.fromhex(TBA_HMAC_SECRET),
-            body,
-            hashlib.md5,
-        ).hexdigest()
-    except ValueError:
-        expected_bytes = None
-
-    log.info(
-        "HMAC debug — received: %s | expected(str): %s | expected(bytes): %s",
-        received_hmac, expected_str, expected_bytes,
-    )
-
-    if hmac.compare_digest(expected_str, received_hmac):
-        return True
-    if expected_bytes and hmac.compare_digest(expected_bytes, received_hmac):
-        log.info("HMAC matched using raw-bytes key")
-        return True
-    return False
+    log.debug("HMAC — received: %s | expected: %s", received_hmac, expected)
+    return hmac.compare_digest(expected, received_hmac)
 
 
 def _verify_nexus_auth(request: web.Request) -> bool:
