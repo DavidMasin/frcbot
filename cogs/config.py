@@ -328,7 +328,7 @@ class Config(commands.Cog):
             if role:
                 lines.append(f"{role.mention} — set via `/setup adminrole`")
             else:
-                lines.append(f"<@&{cfg['admin_role_id']}> — *(role deleted, use `/setup adminrole` to update)*")
+                lines.append(f"<&{cfg['admin_role_id']}> — *(role deleted, use `/setup adminrole` to update)*")
         else:
             lines.append("*No extra role configured — use `/setup adminrole` to add one*")
 
