@@ -37,8 +37,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("webhook_server")
 
-TBA_HMAC_SECRET: str = os.environ.get("TBA_HMAC_SECRET", "")
-NEXUS_AUTH: str      = os.environ.get("NEXUS_AUTH", "")
+TBA_HMAC_SECRET:    str = os.environ.get("TBA_HMAC_SECRET", "")
+NEXUS_AUTH:         str = os.environ.get("NEXUS_AUTH", "")       # your key for calling Nexus API
+NEXUS_WEBHOOK_TOKEN: str = os.environ.get("NEXUS_WEBHOOK_TOKEN", "")  # token Nexus sends in its POSTs to you
 
 
 # ── HMAC verification ─────────────────────────────────────────────────────────
@@ -57,9 +58,21 @@ def _verify_tba_hmac(body: bytes, received_hmac: str) -> bool:
     return hmac.compare_digest(expected, received_hmac)
 
 
-def _verify_nexus_auth(request: web.Request) -> bool:
-    """Nexus passes its API key as a header."""
-    return request.headers.get("Nexus-Api-Key", "") == NEXUS_AUTH
+def _verify_nexus_token(request: web.Request) -> bool:
+    """
+    Nexus includes the webhook token in the Nexus-Token header on every POST.
+    This token is shown on the Nexus website when you set up the webhook —
+    it is NOT the same as your NEXUS_AUTH API key.
+    If NEXUS_WEBHOOK_TOKEN is not set, log a warning and allow through.
+    """
+    if not NEXUS_WEBHOOK_TOKEN:
+        log.warning("NEXUS_WEBHOOK_TOKEN not set — skipping Nexus auth (unsafe!)")
+        # Log whatever token Nexus is actually sending so you can copy it
+        received = request.headers.get("Nexus-Token", "<not present>")
+        log.info("Nexus sent Nexus-Token: %s", received)
+        return True
+    received = request.headers.get("Nexus-Token", "")
+    return received == NEXUS_WEBHOOK_TOKEN
 
 
 # ── TBA webhook handler ───────────────────────────────────────────────────────
@@ -111,17 +124,17 @@ async def handle_tba(request: web.Request) -> web.Response:
 # ── Nexus webhook handler ─────────────────────────────────────────────────────
 
 async def handle_nexus(request: web.Request) -> web.Response:
-    if not _verify_nexus_auth(request):
-        log.warning("Nexus webhook: invalid auth — rejected")
-        return web.Response(status=403, text="Invalid auth")
+    if not _verify_nexus_token(request):
+        log.warning("Nexus webhook: invalid token — rejected (received: %s)",
+                    request.headers.get("Nexus-Token", "<missing>"))
+        return web.Response(status=403, text="Invalid token")
 
     try:
         payload = json.loads(await request.read())
     except json.JSONDecodeError:
         return web.Response(status=400, text="Bad JSON")
 
-    log.info("Nexus webhook: event=%s match=%s status=%s",
-             payload.get("eventKey"), payload.get("matchLabel"), payload.get("status"))
+    log.info("Nexus webhook received: %s", payload)
 
     bot: commands.Bot = request.app["bot"]
     await _dispatch(bot, "nexus_queue_update", payload)
