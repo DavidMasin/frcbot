@@ -343,112 +343,114 @@ class Notifications(commands.Cog):
     @commands.Cog.listener()
     async def on_nexus_queue_update(self, data: dict) -> None:
         """
-        Nexus sends queue status updates: On deck, On field, etc.
-        Expected payload shape:
-          {
-            "eventKey": "2026isde1",
-            "matchLabel": "Qualification 12",
-            "status": "On deck",
-            "redTeams": ["1234", "5678", "9012"],
-            "blueTeams": ["2345", "6789", "0123"],
-            "times": {"estimatedStartTime": 1714000000000}
-          }
+        Nexus sends the full event state on every update — a dict with an
+        'eventKey' and a 'matches' array. We loop through every match and
+        announce the ones with status 'On deck' or 'On field' that involve
+        tracked teams.
         """
-        status      = data.get("status", "")
-        red_teams   = data.get("redTeams", [])
-        blue_teams  = data.get("blueTeams", [])
-        label       = data.get("matchLabel", "?")
-        event_key   = data.get("eventKey", "")
-        times       = data.get("times") or {}
-        start_ms    = times.get("estimatedStartTime", 0)
+        event_key = data.get("eventKey", "")
+        matches   = data.get("matches", [])
 
-        if status not in ("On deck", "On field"):
+        if not event_key or not matches:
             return
 
-        all_match_teams = set(red_teams + blue_teams)
-        guilds = event_router.get_interested_guilds(all_match_teams)
-        users  = event_router.get_interested_users(all_match_teams)
-        if not guilds and not users:
-            return
-
-        # Build a TBA-style match key for Statbotics + buttons
-        tba_key = _nexus_label_to_tba_key(event_key, label)
-        ev      = await self._event_data(event_key)
+        ev         = await self._event_data(event_key)
         event_name = ev.get("short_name") or ev.get("name") or event_key
-        webcast = self._webcast_url(ev)
+        webcast    = self._webcast_url(ev)
 
-        minutes_until = max(0, (start_ms - __import__("time").time() * 1000)) // 60_000 if start_ms else 0
-        time_str      = f"~**{int(minutes_until)} min**" if minutes_until > 0 else "**now!**"
-        title_prefix  = "🛫 On Deck" if status == "On deck" else "🔥 Starting Now"
+        import time as _time
 
-        for guild_id, guild_teams in guilds.items():
-            on_red  = bool(guild_teams & set(red_teams))
-            on_blue = bool(guild_teams & set(blue_teams))
-            side    = (
-                "🔴 Red Alliance"  if on_red and not on_blue else
-                "🔵 Blue Alliance" if on_blue and not on_red else
-                "🟪 Both Alliances"
-            )
-            side_key = "red" if on_red and not on_blue else "blue"
+        for match in matches:
+            status     = match.get("status", "")
+            red_teams  = match.get("redTeams", [])
+            blue_teams = match.get("blueTeams", [])
+            label      = match.get("label", "?")
+            times      = match.get("times") or {}
+            start_ms   = times.get("estimatedStartTime", 0)
 
-            names = [await self._nickname(t) for t in guild_teams]
-            names_str = ", ".join(f"**{n}** (#{t})" for n, t in zip(names, guild_teams))
+            if status not in ("On deck", "On field"):
+                continue
 
-            win_prob, winner_pred = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: _win_probability(tba_key, side_key)
-            )
+            all_match_teams = set(red_teams + blue_teams)
+            guilds = event_router.get_interested_guilds(all_match_teams)
+            users  = event_router.get_interested_users(all_match_teams)
+            if not guilds and not users:
+                continue
 
-            desc_lines = [
-                f"📋 **Match:** {label}",
-                f"🏅 {names_str}",
-                f"🎨 **Alliance:** {side}",
-                "",
-            ]
-            if win_prob is not None:
-                desc_lines += [
-                    f"🏆 **Win Probability:** {win_prob:.1%}",
-                    f"🔮 **Predicted Winner:** {winner_pred.upper()}",
+            tba_key       = _nexus_label_to_tba_key(event_key, label)
+            minutes_until = max(0, (start_ms - _time.time() * 1000)) // 60_000 if start_ms else 0
+            time_str      = f"~**{int(minutes_until)} min**" if minutes_until > 0 else "**now!**"
+            title_prefix  = "🛫 On Deck" if status == "On deck" else "🔥 Starting Now"
+
+            for guild_id, guild_teams in guilds.items():
+                on_red   = bool(guild_teams & set(red_teams))
+                on_blue  = bool(guild_teams & set(blue_teams))
+                side     = (
+                    "🔴 Red Alliance"  if on_red and not on_blue else
+                    "🔵 Blue Alliance" if on_blue and not on_red else
+                    "🟪 Both Alliances"
+                )
+                side_key = "red" if on_red and not on_blue else "blue"
+
+                names     = [await self._nickname(t) for t in guild_teams]
+                names_str = ", ".join(f"**{n}** (#{t})" for n, t in zip(names, guild_teams))
+
+                win_prob, winner_pred = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _win_probability(tba_key, side_key)
+                )
+
+                desc_lines = [
+                    f"📋 **Match:** {label}",
+                    f"🏅 {names_str}",
+                    f"🎨 **Alliance:** {side}",
                     "",
                 ]
-            desc_lines.append(f"🕑 Starts in {time_str}")
+                if win_prob is not None:
+                    desc_lines += [
+                        f"🏆 **Win Probability:** {win_prob:.1%}",
+                        f"🔮 **Predicted Winner:** {winner_pred.upper()}",
+                        "",
+                    ]
+                desc_lines.append(f"🕑 Starts in {time_str}")
 
-            embed = discord.Embed(
-                title=f"{title_prefix} – {event_name}",
-                description="\n".join(desc_lines),
-                color=discord.Color.gold() if status == "On deck" else discord.Color.red(),
-            )
-            embed.set_footer(text=f"{event_name} • FRC Webhook Bot")
-            view = _match_buttons(tba_key, webcast)
-            await self._send_to_channel(guild_id, embed, view)
+                embed = discord.Embed(
+                    title=f"{title_prefix} – {event_name}",
+                    description="\n".join(desc_lines),
+                    color=discord.Color.gold() if status == "On deck" else discord.Color.red(),
+                )
+                embed.set_footer(text=f"{event_name} • FRC Webhook Bot")
+                view = _match_buttons(tba_key, webcast)
+                await self._send_to_channel(guild_id, embed, view)
+                log.info("Nexus: announced %s for guild %s (%s)", label, guild_id, status)
 
-        # DM personal subscribers
-        for user_id, user_teams in event_router.get_interested_users(all_match_teams).items():
-            on_red  = bool(user_teams & set(red_teams))
-            on_blue = bool(user_teams & set(blue_teams))
-            side    = (
-                "🔴 Red Alliance"  if on_red and not on_blue else
-                "🔵 Blue Alliance" if on_blue and not on_red else
-                "🟪 Both Alliances"
-            )
-            names     = [await self._nickname(t) for t in user_teams]
-            names_str = ", ".join(f"**{n}** (#{t})" for n, t in zip(names, user_teams))
+            # DM personal subscribers
+            for user_id, user_teams in event_router.get_interested_users(all_match_teams).items():
+                on_red  = bool(user_teams & set(red_teams))
+                on_blue = bool(user_teams & set(blue_teams))
+                side    = (
+                    "🔴 Red Alliance"  if on_red and not on_blue else
+                    "🔵 Blue Alliance" if on_blue and not on_red else
+                    "🟪 Both Alliances"
+                )
+                names     = [await self._nickname(t) for t in user_teams]
+                names_str = ", ".join(f"**{n}** (#{t})" for n, t in zip(names, user_teams))
 
-            embed = discord.Embed(
-                title=f"{title_prefix} – {event_name}",
-                description=(
-                    f"📋 **Match:** {label}\n"
-                    f"🏅 {names_str}\n"
-                    f"🎨 **Alliance:** {side}\n\n"
-                    f"🕑 Starts in {time_str}"
-                ),
-                color=discord.Color.gold() if status == "On deck" else discord.Color.red(),
-            )
-            embed.set_footer(text=f"{event_name} • FRC Webhook Bot")
-            try:
-                user = await self.bot.fetch_user(user_id)
-                await user.send(embed=embed, view=_match_buttons(tba_key, webcast))
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+                embed = discord.Embed(
+                    title=f"{title_prefix} – {event_name}",
+                    description=(
+                        f"📋 **Match:** {label}\n"
+                        f"🏅 {names_str}\n"
+                        f"🎨 **Alliance:** {side}\n\n"
+                        f"🕑 Starts in {time_str}"
+                    ),
+                    color=discord.Color.gold() if status == "On deck" else discord.Color.red(),
+                )
+                embed.set_footer(text=f"{event_name} • FRC Webhook Bot")
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    await user.send(embed=embed, view=_match_buttons(tba_key, webcast))
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
