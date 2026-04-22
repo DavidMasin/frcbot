@@ -75,8 +75,6 @@ class Notifications(commands.Cog):
         self._session: aiohttp.ClientSession | None = None
         self._nicknames: dict[str, str] = {}
         self._event_cache: dict[str, dict] = {}
-        # Dedup for Nexus queue announcements: (event_key, label, status)
-        self._seen_queue: set[tuple] = set()
 
     async def cog_load(self):
         self._session = aiohttp.ClientSession()
@@ -371,11 +369,10 @@ class Notifications(commands.Cog):
             if status not in ("On deck", "On field"):
                 continue
 
-            # Only announce each (event, match, status) once
-            seen_key = (event_key, label, status)
-            if seen_key in self._seen_queue:
+            # Only announce each (event, match, status) once — persisted in DB
+            if database.is_queue_seen(event_key, label, status):
                 continue
-            self._seen_queue.add(seen_key)
+            database.mark_queue_seen(event_key, label, status)
 
             all_match_teams = set(red_teams + blue_teams)
             guilds = event_router.get_interested_guilds(all_match_teams)

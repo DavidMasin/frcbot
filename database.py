@@ -133,6 +133,14 @@ def init_db() -> None:
                 PRIMARY KEY (guild_id, match_key)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS seen_queue (
+                event_key TEXT NOT NULL,
+                label     TEXT NOT NULL,
+                status    TEXT NOT NULL,
+                PRIMARY KEY (event_key, label, status)
+            )
+        """)
     log.info("Database schema ready ✅")
 
 
@@ -316,3 +324,22 @@ def seed_seen_matches(guild_id: int, match_keys: list[str]) -> None:
                 ON CONFLICT DO NOTHING
             """, (guild_id, key))
 
+
+
+# ── Seen queue (Nexus dedup) ──────────────────────────────────────────────────
+
+def is_queue_seen(event_key: str, label: str, status: str) -> bool:
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM seen_queue WHERE event_key = %s AND label = %s AND status = %s",
+            (event_key, label, status),
+        )
+        return cur.fetchone() is not None
+
+
+def mark_queue_seen(event_key: str, label: str, status: str) -> None:
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO seen_queue (event_key, label, status) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (event_key, label, status),
+        )
