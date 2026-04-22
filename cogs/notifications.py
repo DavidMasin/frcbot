@@ -214,7 +214,7 @@ class Notifications(commands.Cog):
         event_name = event_data.get("short_name") or event_data.get("name") or match.get("event_key", "?")
         level      = match.get("comp_level", "?").upper()
         num        = match.get("match_number", "?")
-        rp         = match.get("score_breakdown", {}).get(
+        rp         = (match.get("score_breakdown") or {}).get(
             "red" if on_red else "blue", {}
         ).get("rp", 0)
 
