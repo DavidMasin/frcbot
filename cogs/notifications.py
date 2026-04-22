@@ -358,6 +358,24 @@ class Notifications(commands.Cog):
 
         import time as _time
 
+        # For each guild, check if this is their first Nexus push.
+        # If so, seed all current On deck/On field statuses silently so they
+        # don't get spammed with matches that are already mid-field.
+        all_teams_in_payload: set[str] = set()
+        for m in matches:
+            all_teams_in_payload |= set(m.get("redTeams", []) + m.get("blueTeams", []))
+
+        guilds_in_payload = event_router.get_interested_guilds(all_teams_in_payload)
+        for guild_id in guilds_in_payload:
+            if not database.is_guild_nexus_seeded(guild_id):
+                # Seed all current active statuses silently
+                for m in matches:
+                    s = m.get("status", "")
+                    if s in ("On deck", "On field"):
+                        database.mark_queue_seen(event_key, m.get("label", ""), s)
+                database.mark_guild_nexus_seeded(guild_id)
+                log.info("Guild %s: seeded existing Nexus queue statuses silently", guild_id)
+
         for match in matches:
             status     = match.get("status", "")
             red_teams  = match.get("redTeams", [])

@@ -134,6 +134,11 @@ def init_db() -> None:
             )
         """)
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS guild_nexus_seeded (
+                guild_id BIGINT PRIMARY KEY
+            )
+        """)
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS seen_queue (
                 event_key TEXT NOT NULL,
                 label     TEXT NOT NULL,
@@ -342,4 +347,19 @@ def mark_queue_seen(event_key: str, label: str, status: str) -> None:
         cur.execute(
             "INSERT INTO seen_queue (event_key, label, status) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (event_key, label, status),
+        )
+
+# ── Guild Nexus seeding ───────────────────────────────────────────────────────
+
+def is_guild_nexus_seeded(guild_id: int) -> bool:
+    with _cursor() as cur:
+        cur.execute("SELECT 1 FROM guild_nexus_seeded WHERE guild_id = %s", (guild_id,))
+        return cur.fetchone() is not None
+
+
+def mark_guild_nexus_seeded(guild_id: int) -> None:
+    with _cursor() as cur:
+        cur.execute(
+            "INSERT INTO guild_nexus_seeded (guild_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            (guild_id,),
         )
