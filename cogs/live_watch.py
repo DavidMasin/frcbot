@@ -33,7 +33,7 @@ import tba as _tba
 
 log = logging.getLogger("live_watch")
 
-NEXUS_AUTH: Final[str] = os.environ.get("NEXUS_AUTH", "NFkS99_q6pO8lvyC831Ia_lFkf4")
+NEXUS_AUTH: Final[str] = os.environ.get("NEXUS_AUTH")
 NEXUS_BASE  = "https://frc.nexus/api/v1/event"
 SEASON      = int(os.environ.get("FRC_SEASON", "2026"))
 
