@@ -656,7 +656,7 @@ class LiveWatch(commands.Cog):
         )
 
         teams_str  = ", ".join(f"#{t}" for t in sorted(tracked_in_match, key=int))
-        rp         = m.get("score_breakdown", {}).get(
+        rp         = (m.get("score_breakdown") or {}).get(
             "red" if on_red else "blue", {}
         ).get("rp", 0)
         level      = m.get("comp_level", "?").upper()
