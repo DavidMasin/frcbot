@@ -719,7 +719,7 @@ class LiveWatch(commands.Cog):
                     continue
 
                 if rank_before is None or rank_before == rank_now:
-                    arrow = "➡️"
+                    arrow = "↕️"
                     delta = ""
                 elif rank_now < rank_before:
                     arrow = "🔼"
