@@ -198,6 +198,11 @@ class LiveWatch(commands.Cog):
         # Nickname cache to avoid hammering TBA
         self._nickname_cache: dict[str, str] = {}
 
+        # Rankings cache: {event_key: {team_number: rank}}
+        # Stores rankings BEFORE each match so we can show movement after
+        self._rankings_before: dict[str, dict[str, int]] = {}
+        self._rankings_now:    dict[str, dict[str, int]] = {}
+
     async def cog_load(self):
         self._http = aiohttp.ClientSession()
         asyncio.create_task(self._start())
@@ -529,7 +534,18 @@ class LiveWatch(commands.Cog):
                     teams_in_match = tracked & match_teams
                     if not teams_in_match:
                         continue
-                    result_embed = self._result_embed(m, teams_in_match, event_data)
+
+                    # Snapshot rankings before this batch, then fetch current
+                    before = self._rankings_now.get(tba_key, {})
+                    current = await self._fetch_rankings(tba_key)
+                    self._rankings_before[tba_key] = before
+                    self._rankings_now[tba_key]    = current
+
+                    result_embed = self._result_embed(
+                        m, teams_in_match, event_data,
+                        rankings_before=before,
+                        rankings_now=current,
+                    )
                     try:
                         await channel.send(embed=result_embed)
                     except discord.Forbidden:
@@ -631,11 +647,26 @@ class LiveWatch(commands.Cog):
         embed.set_footer(text=footer)
         return embed
 
+    async def _fetch_rankings(self, event_key: str) -> dict[str, int]:
+        """Return {team_number: rank} for all ranked teams at this event."""
+        data = await _tba.event_rankings(self._http, event_key)
+        if not data:
+            return {}
+        result: dict[str, int] = {}
+        for row in data.get("rankings", []):
+            team = row.get("team_key", "")[3:]   # strip "frc"
+            rank = row.get("rank")
+            if team and rank:
+                result[team] = rank
+        return result
+
     def _result_embed(
         self,
         m: dict,
         tracked_in_match: set[str],
         event_data: dict,
+        rankings_before: dict[str, int] | None = None,
+        rankings_now:    dict[str, int] | None = None,
     ) -> discord.Embed:
         red_teams  = [t[3:] for t in m["alliances"]["red"]["team_keys"]]
         blue_teams = [t[3:] for t in m["alliances"]["blue"]["team_keys"]]
@@ -676,6 +707,36 @@ class LiveWatch(commands.Cog):
             ),
             color=color,
         )
+
+        # ── Ranking movement ──────────────────────────────────────────────────
+        if rankings_now:
+            ranking_lines = []
+            for team in sorted(tracked_in_match, key=int):
+                rank_now    = rankings_now.get(team)
+                rank_before = (rankings_before or {}).get(team)
+
+                if rank_now is None:
+                    continue
+
+                if rank_before is None or rank_before == rank_now:
+                    arrow = "➡️"
+                    delta = ""
+                elif rank_now < rank_before:
+                    arrow = "🔼"
+                    delta = f" (+{rank_before - rank_now})"
+                else:
+                    arrow = "🔽"
+                    delta = f" (-{rank_now - rank_before})"
+
+                ranking_lines.append(f"#{team}: **#{rank_now}** {arrow}{delta}")
+
+            if ranking_lines:
+                embed.add_field(
+                    name="🏅 Rankings",
+                    value="\n".join(ranking_lines),
+                    inline=False,
+                )
+
         embed.add_field(
             name="🔗 Links",
             value=(
