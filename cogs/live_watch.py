@@ -474,7 +474,10 @@ class LiveWatch(commands.Cog):
                             label, display, tba_key, match_key, minutes_until, "🛫 On Deck"
                         )
                         view = _match_view(match_key, _webcast_url(event_data))
-                        await channel.send(embed=embed, view=view)
+                        try:
+                            await channel.send(embed=embed, view=view)
+                        except discord.Forbidden:
+                            log.warning("Missing permissions to send to channel in guild %s — check bot role permissions", guild_id)
                         await self._dm_personal_subscribers(teams_in_match, embed, view)
                         self._seen_upcoming.add((guild_id, nexus_k, label, "deck"))
 
@@ -484,7 +487,10 @@ class LiveWatch(commands.Cog):
                             label, display, tba_key, match_key, 0, "🔥 MATCH STARTING NOW"
                         )
                         view = _match_view(match_key, _webcast_url(event_data))
-                        await channel.send(embed=embed, view=view)
+                        try:
+                            await channel.send(embed=embed, view=view)
+                        except discord.Forbidden:
+                            log.warning("Missing permissions to send to channel in guild %s — check bot role permissions", guild_id)
                         await self._dm_personal_subscribers(teams_in_match, embed, view)
                         self._seen_upcoming.add((guild_id, nexus_k, label, "field"))
 
@@ -518,7 +524,10 @@ class LiveWatch(commands.Cog):
                     if not teams_in_match:
                         continue
                     result_embed = self._result_embed(m, teams_in_match, event_data)
-                    await channel.send(embed=result_embed)
+                    try:
+                        await channel.send(embed=result_embed)
+                    except discord.Forbidden:
+                        log.warning("Missing permissions to send to channel in guild %s — check bot role permissions", guild_id)
                     await self._dm_personal_subscribers(teams_in_match, result_embed)
                     self._seen_results.add(key)
 
