@@ -219,11 +219,33 @@ class LiveWatch(commands.Cog):
         await self.bot.wait_until_ready()
         await self._do_refresh_events()
         await self._seed_played()
+        await self._seed_rankings()
         self._refresh_events.start()
         self._poll.start()
         total_events = sum(len(v) for v in self._active_events.values())
         log.info("LiveWatch ready – watching %d event(s) across %d guild(s)",
                  total_events, len(self._active_events))
+
+    async def _seed_rankings(self):
+        """
+        Fetch current rankings for every active event on startup.
+        Stored as both _rankings_before and _rankings_now so the first
+        match result after deployment can correctly show rank movement.
+        """
+        seeded = 0
+        seen_events: set[str] = set()
+        for events in self._active_events.values():
+            for event_key in events:
+                if event_key in seen_events:
+                    continue
+                seen_events.add(event_key)
+                ranks = await self._fetch_rankings(event_key)
+                if ranks:
+                    self._rankings_before[event_key] = ranks
+                    self._rankings_now[event_key]    = ranks
+                    seeded += len(ranks)
+        log.info("Seeded rankings for %d event(s) (%d team entries)",
+                 len(seen_events), seeded)
 
     # ── Event discovery ───────────────────────────────────────────────────────
 
@@ -521,6 +543,14 @@ class LiveWatch(commands.Cog):
 
             for tba_key, event_data in events.items():
                 matches = await _tba.event_matches(self._http, tba_key) or []
+
+                # Fetch fresh rankings once per event per poll tick
+                fresh_ranks = await self._fetch_rankings(tba_key)
+                before_ranks = self._rankings_now.get(tba_key, {})
+                if fresh_ranks:
+                    self._rankings_before[tba_key] = before_ranks
+                    self._rankings_now[tba_key]    = fresh_ranks
+
                 for m in matches:
                     if not m.get("winning_alliance"):
                         continue
@@ -536,10 +566,8 @@ class LiveWatch(commands.Cog):
                         continue
 
                     # Snapshot rankings before this batch, then fetch current
-                    before = self._rankings_now.get(tba_key, {})
-                    current = await self._fetch_rankings(tba_key)
-                    self._rankings_before[tba_key] = before
-                    self._rankings_now[tba_key]    = current
+                    before = self._rankings_before.get(tba_key, {})
+                    current = self._rankings_now.get(tba_key, {})
 
                     result_embed = self._result_embed(
                         m, teams_in_match, event_data,
