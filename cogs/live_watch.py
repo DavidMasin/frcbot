@@ -33,7 +33,7 @@ import tba as _tba
 
 log = logging.getLogger("live_watch")
 
-NEXUS_AUTH: Final[str] = os.environ.get("NEXUS_AUTH")
+NEXUS_AUTH: Final[str] = os.environ.get("NEXUS_AUTH", "NFkS99_q6pO8lvyC831Ia_lFkf4")
 NEXUS_BASE  = "https://frc.nexus/api/v1/event"
 SEASON      = int(os.environ.get("FRC_SEASON", "2026"))
 
@@ -244,8 +244,12 @@ class LiveWatch(commands.Cog):
             keys: set[str] = set()
             for team in tracked_teams:
                 for ev in team_event_map.get(team, []):
+                    if not isinstance(ev, dict):
+                        continue
                     key = ev.get("key")
-                    if key and _is_event_active(ev):
+                    if not isinstance(key, str):
+                        continue
+                    if _is_event_active(ev):
                         keys.add(key)
                         all_active_keys.add(key)
             guild_event_keys[guild_id] = keys
@@ -308,11 +312,13 @@ class LiveWatch(commands.Cog):
             )
 
             for team in tracked_teams:
-                current_keys = {
-                    ev["key"]
-                    for ev in team_event_map.get(team, [])
-                    if ev.get("key")
-                }
+                current_keys: set[str] = set()
+                for ev in team_event_map.get(team, []):
+                    if not isinstance(ev, dict):
+                        continue
+                    k = ev.get("key")
+                    if isinstance(k, str) and k:
+                        current_keys.add(k)
                 if not current_keys:
                     continue
 
